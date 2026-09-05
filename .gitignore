@@ -63,3 +63,12 @@ motion-playground/public/sfx/*
 .codebuddy/skills/overlay-fx-generator/我的偏好.md
 .workbuddy/skills/overlay-fx-generator/经验规则.md
 .workbuddy/skills/overlay-fx-generator/我的偏好.md
+
+# Tauri 桌面壳(desktop/)的生成物:sidecar、组装出来的运行时、cargo 产物
+desktop/node_modules/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/src-tauri/binaries/
+desktop/src-tauri/runtime/
+desktop/dist/
+desktop/.smoke-state.json
