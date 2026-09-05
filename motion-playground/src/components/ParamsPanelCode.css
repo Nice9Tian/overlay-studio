@@ -1,0 +1,181 @@
+/* 右栏分页栏(常规 / 代码)+ 代码页 */
+
+.pp-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 22px 10px;
+  margin-top: -6px;
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: 14px;
+}
+.pp-tab {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+.pp-tab:hover {
+  color: var(--ink);
+}
+.pp-tab.is-on {
+  color: var(--ink);
+  background: var(--bg-elev);
+  border-color: var(--hairline);
+}
+.pp-tab.is-on::after {
+  content: "";
+  display: block;
+  height: 2px;
+  margin: 4px -12px -6px;
+  background: var(--accent);
+}
+
+/* 代码页 */
+/* 代码页顶替的是常规页的 .ctrl-list,右栏的滚动职责在它身上(App.css 里 .ctrl-list 是
+   flex:1 + min-height:0 + overflow-y:auto),所以这里要接过来:否则源码一展开,
+   下面的内容超出面板高度就再也滚不到了 */
+.ppc {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 22px 22px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.ppc-editor {
+  flex-shrink: 0;
+}
+.ppc-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ppc-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ppc-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.ppc-btn {
+  appearance: none;
+  background: var(--bg-elev);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.ppc-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.ppc-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ppc-btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-panel);
+  font-weight: 600;
+}
+.ppc-editor {
+  width: 100%;
+  min-height: 320px;
+  height: 46vh;
+  resize: vertical;
+  box-sizing: border-box;
+  background: var(--bg-elev);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 10px 12px;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  outline: none;
+}
+.ppc-editor:focus {
+  border-color: var(--accent);
+}
+.ppc-editor.is-err {
+  border-color: #e5484d;
+}
+.ppc-status {
+  min-height: 18px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-faint);
+}
+.ppc-status.is-err {
+  color: #e5484d;
+}
+.ppc-status.is-ok {
+  color: var(--accent);
+}
+
+/* 组件源码(只读) */
+.ppc-src {
+  border-top: 1px solid var(--hairline);
+  padding-top: 8px;
+}
+.ppc-src-toggle {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 4px 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+.ppc-src-toggle:hover {
+  color: var(--ink);
+}
+.ppc-src-toggle em {
+  font-style: normal;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--ink-faint);
+  margin-left: 6px;
+}
+.ppc-src-file {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  margin: 4px 0 6px;
+}
+.ppc-src-pre {
+  margin: 0;
+  max-height: 46vh;
+  overflow: auto;
+  background: var(--bg-elev);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink);
+  white-space: pre;
+  tab-size: 2;
+}
