@@ -1,0 +1,122 @@
+/* 预览画面下面的操作栏(StageControls):和画布同宽,紧贴画布下沿 */
+.stc {
+  container-type: inline-size;
+  container-name: stc;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 0;
+  min-height: 38px;
+  margin: -4px 26px 12px;
+  padding: 3px 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+
+.stc > * + * {
+  margin-left: 18px;
+}
+.stc-group {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.stc-btn {
+  flex-shrink: 0;
+  height: 28px;
+  padding: 0 13px;
+  margin-left: -1px;
+  background: transparent;
+  border: 1px solid var(--hairline-strong, var(--hairline));
+  border-radius: 0;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+.stc-btn:first-child {
+  margin-left: 0;
+  border-radius: 4px 0 0 4px;
+}
+.stc-btn:last-child {
+  border-radius: 0 4px 4px 0;
+}
+.stc-btn:hover:not(:disabled) {
+  background: var(--fill-subtle);
+  color: var(--ink);
+}
+.stc-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+/* 正在播放、开关开启状态:主按钮点亮成信号色 */
+.stc-btn.is-on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  z-index: 1;
+}
+.stc-btn.is-on:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--on-accent);
+  opacity: 0.9;
+}
+.stc-btn.is-muted {
+  color: var(--ink-faint);
+}
+.stc-time {
+  flex-shrink: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.stc-sep,
+.stc-dur {
+  color: var(--ink-faint);
+}
+
+.stc-divider {
+  flex-shrink: 0;
+  width: 1px;
+  height: 18px;
+  background: var(--hairline);
+}
+
+@container stc (max-width: 600px) {
+  .stc-btn {
+    padding: 0 8px;
+  }
+  .stc > * + * {
+    margin-left: 12px;
+  }
+}
+
+@container stc (max-width: 500px) {
+  .stc-btn {
+    padding: 0 4px;
+  }
+  .stc > * + * {
+    margin-left: 6px;
+  }
+}
+
+@container stc (max-width: 430px) {
+  .stc-btn {
+    padding: 0 2px;
+    font-size: 11.5px;
+  }
+  .stc > * + * {
+    margin-left: 4px;
+  }
+}
