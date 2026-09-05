@@ -1,0 +1,642 @@
+.tlb {
+  container-type: inline-size;
+  container-name: tlb;
+}
+
+div.tlb.tlb {
+  max-height: none;
+}
+
+.tlb .tlb-track {
+  max-height: none;
+  flex: none;
+  /* 横向:能滚(中键拖、Shift+滚轮、导航条都靠 scrollLeft),但不显示底部滚动条 —— 顶部导航条已经代替它 */
+  overflow-x: auto;
+  /* 不能写 scrollbar-width:Chromium 只要见到这个标准属性就整体忽略下面的 ::-webkit-scrollbar 规则,
+     横向条就藏不掉。细条效果改用 webkit 规则做。 */
+  scrollbar-width: auto;
+}
+.tlb .tlb-track::-webkit-scrollbar {
+  width: 7px;
+  height: 0;
+}
+.tlb .tlb-track::-webkit-scrollbar:horizontal {
+  height: 0;
+  display: none;
+}
+.tlb .tlb-track::-webkit-scrollbar-thumb {
+  background: var(--hairline-strong);
+  border-radius: 4px;
+}
+
+.tlb-bands {
+  display: flex;
+  flex-direction: column;
+  /* 纵向命中测试的坐标原点 */
+  position: relative;
+}
+
+/* 拖动中的色块:浮在所有带之上,不接管指针(拖动监听挂在 window 上) */
+.tlb-card.is-dragging {
+  z-index: 20;
+  pointer-events: none;
+  opacity: 0.95;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  filter: brightness(1.12);
+}
+
+.tlb-band {
+  position: relative;
+  width: 100%;
+  box-sizing: border-box;
+  /* Visual separation between tracks */
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.tlb-band:last-child {
+  border-bottom: none;
+}
+
+.tlb-band.is-drag-over {
+  background: var(--fill-subtle);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+
+.tlb-band--video {
+  /* 视频序列只读，不参与任何拖放交互 */
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.tlb-video-clip {
+  position: absolute;
+  top: 0;
+  box-sizing: border-box;
+  border-radius: 2px;
+  /* 视频块使用低饱和的中性灰 */
+  background: rgba(128, 128, 128, 0.4);
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  overflow: hidden;
+  cursor: default;
+}
+
+.tlb-video-clip-text {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* 滚动内容 = 一行两列:左列序列标签(sticky),右列内容层。宽度由 tsx 按 px 给,
+   这里只管排布,别写百分比(父级按内容撑开,百分比算不出来) */
+.tlb-scroller {
+  display: flex;
+  align-items: flex-start;
+  min-width: 100%;
+}
+.tlb-scroller .tlb-inner {
+  min-width: 0;
+  flex: none;
+}
+
+/* 序列标签列:横向滚动时贴在左边不动;纵向跟内容一起滚。
+   和 .tlb-inner 一样先空 12px(播放头手柄那一格),再按每条带的高度摆一格,两列才对得齐 */
+.tlb-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 12;
+  flex: none;
+  box-sizing: border-box;
+  padding-top: 12px;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--hairline);
+}
+.tlb-gutter-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: 0 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: grab;
+  user-select: none;
+}
+/*
+ * 为了让 flex 容器(.tlb-gutter-cell)内的文本正常出现省略号，
+ * 我们给纯文字的包裹节点(.tlb-gutter-name, .tlb-gutter-label)增加 min-width: 0 限制。
+ * 改名输入框不受影响，因为输入框本身处理了占位。
+ */
+.tlb-gutter-name,
+.tlb-gutter-label {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tlb-gutter-cell:last-child {
+  border-bottom: none;
+}
+.tlb-gutter-cell:hover {
+  color: var(--ink);
+  background: var(--fill-subtle, rgba(255, 255, 255, 0.06));
+}
+.tlb-gutter-cell:active {
+  cursor: grabbing;
+}
+.tlb-gutter-cell--video {
+  cursor: default;
+}
+.tlb-gutter-cell--video:active {
+  cursor: default;
+}
+.tlb-gutter-cell--video:hover {
+  background: transparent;
+  color: var(--ink-muted);
+}
+.tlb-gutter-cell.is-reordering {
+  opacity: 0.5;
+}
+/* 双击改名:格子变成输入框,占满格子,字号和标签一致 */
+.tlb-gutter-cell.is-editing {
+  padding: 0 3px;
+  cursor: text;
+  background: var(--bg-elev);
+}
+.tlb-gutter-input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 100%;
+  max-height: 22px;
+  padding: 0 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  outline: none;
+}
+
+.tlb-band.is-reordering {
+  opacity: 0.5;
+}
+
+.tlb-reorder-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  z-index: 30;
+  pointer-events: none;
+}
+
+.tlb-inner.is-panning {
+  cursor: grabbing;
+}
+
+/* 导航条 + 轨道区的定位容器:全局播放头挂在这上面 */
+.tlb-body {
+  position: relative;
+}
+/* 滚动容器里原来那条播放头让位给全局的(两条叠着会发虚) */
+.tlb-scroller .tlb-playhead {
+  display: none;
+}
+/* 全局播放头:白色竖线从导航条顶一直贯穿到轨道区底,顶端一个小三角当把手;不接指针 */
+.tlb-playhead-global {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  z-index: 15;
+  pointer-events: none;
+}
+.tlb-playhead-global::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 0;
+  left: -1px;
+  width: 2px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+.tlb-ph-mark {
+  position: absolute;
+  top: 0;
+  left: -6px;
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 8px solid #fff;
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.5));
+}
+/* 导航条上的播放头刻度(整段时长里的位置) */
+.tlb-nav-head {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: #fff;
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+/* 顶部导航条(Premiere 式):槽 = 整段时长,滑块 = 可见范围 */
+.tlb-nav-row {
+  box-sizing: border-box;
+  padding-top: 2px;
+  padding-bottom: 5px;
+}
+.tlb-nav {
+  position: relative;
+  height: 12px;
+  border-radius: 6px;
+  background: var(--fill-subtle, rgba(255, 255, 255, 0.06));
+  cursor: pointer;
+}
+.tlb-nav-thumb {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  box-sizing: border-box;
+  min-width: 20px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
+  cursor: grab;
+}
+.tlb-nav-thumb:hover {
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.tlb-nav-thumb:active {
+  cursor: grabbing;
+}
+.tlb-nav-handle {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 9px;
+  cursor: ew-resize;
+}
+.tlb-nav-handle.is-l {
+  left: -1px;
+}
+.tlb-nav-handle.is-r {
+  right: -1px;
+}
+.tlb-nav-handle::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--bg-panel);
+  opacity: 0.85;
+}
+
+.tlb-add-track-btn {
+  background: transparent;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 3px;
+  color: var(--ink-muted);
+  font-size: 11px;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: all 150ms ease;
+  letter-spacing: 0.02em;
+}
+.tlb-add-track-btn:hover {
+  background: var(--fill-subtle);
+  color: var(--ink);
+  border-color: var(--ink-faint);
+}
+
+/* Lane size buttons */
+/* 行高三档:小/中/大三个按钮常驻,窄窗口只缩间距,不合并成轮换按钮 */
+.tlb-lane-size {
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.tlb-lane-btn {
+  background: transparent;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 3px;
+  color: var(--ink-muted);
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: all 150ms ease;
+  letter-spacing: 0.02em;
+}
+.tlb-lane-btn:hover {
+  background: var(--fill-subtle);
+  color: var(--ink);
+  border-color: var(--ink-faint);
+}
+.tlb-lane-btn.is-on {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+@container tlb (max-width: 900px) {
+  .tlb-lane-size {
+    gap: 2px;
+  }
+  .tlb-lane-btn {
+    padding: 3px 6px;
+  }
+}
+
+.tlb-card {
+  container-type: inline-size;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+/* 色块文字。line-height 16px 和 padding 上下各 2px 是行高三档的计算依据
+   (TimelineBar.tsx 的 CARD_LINE_H / CARD_PAD_V),改这里要同步改那边。 */
+.tlb-card-text {
+  box-sizing: border-box;
+  height: 100%;
+  padding: 2px 4px;
+  font-size: 11px;
+  color: rgba(15, 17, 20, 0.88);
+  background: rgba(255, 255, 255, 0.22);
+  pointer-events: none; /* Let drag events pass through */
+  display: flex;
+  gap: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-radius: 2px;
+  margin-left: 4px;
+  line-height: 16px;
+  align-items: center;
+}
+/* 中 / 大:效果名一行 + 摘要一行(摘要不换行,超长省略号),两行作为一组在色块里垂直居中。
+   档位只决定色块有多高(2 行高 / 3 行高),文字始终是这两行 —— 用户要的是留白,不是塞第三行字。 */
+.tlb-card[data-lines="2"] .tlb-card-text,
+.tlb-card[data-lines="3"] .tlb-card-text {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0;
+}
+.tlb-card[data-lines="2"] .tlb-card-name,
+.tlb-card[data-lines="3"] .tlb-card-name,
+.tlb-card[data-lines="2"] .tlb-card-summary,
+.tlb-card[data-lines="3"] .tlb-card-summary {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tlb-card-name {
+  font-weight: 600;
+}
+
+.tlb-card-summary {
+  font-weight: 400;
+  opacity: 0.9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@container (max-width: 60px) {
+  .tlb-card-summary {
+    display: none;
+  }
+}
+
+@container (max-width: 28px) {
+  .tlb-card-text {
+    display: none;
+  }
+}
+
+/* 新增：拖放间隙和插入线 */
+.tlb-gap-drop {
+  height: 14px;
+  border-top: 1px dashed var(--hairline-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--ink-faint);
+  opacity: 0.5;
+  transition: all 0.2s;
+  pointer-events: none;
+}
+.tlb-gap-drop.is-active {
+  background: var(--fill-subtle);
+  border-top-color: var(--accent);
+  color: var(--accent);
+  opacity: 1;
+}
+
+.tlb-insert-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  z-index: 30;
+  pointer-events: none;
+}
+.tlb-insert-label {
+  position: absolute;
+  top: 2px;
+  left: 0;
+  font-size: 10px;
+  background: var(--accent);
+  color: #fff;
+  padding: 1px 4px;
+  border-bottom-right-radius: 4px;
+  line-height: 1.2;
+}
+
+/* 覆盖 App.css 以保证 info 永远不换行 */
+.tlb .tlb-info {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.tlb .tlb-info > * {
+  flex-shrink: 0;
+}
+
+/* Info 栏响应式：使用 @container */
+.tlb-add-track-text-compact {
+  display: none;
+}
+
+@container tlb (max-width: 1180px) {
+  .tlb .tlb-keys {
+    display: none;
+  }
+}
+
+@container tlb (max-width: 700px) {
+  .tlb-add-track-text-wide {
+    display: none;
+  }
+  .tlb-add-track-text-compact {
+    display: inline;
+  }
+}
+
+/* ===== 专业软件式布局:上面是时间标尺,下面才是范围滑块 ===== */
+.tlb-body {
+  display: flex;
+  flex-direction: column;
+}
+.tlb-body > .tlb-track {
+  order: 1;
+}
+.tlb-body > .tlb-nav-row {
+  order: 2;
+  padding-top: 6px;
+  padding-bottom: 3px;
+}
+/* 播放头竖线只贯穿标尺 + 轨道区,不穿过底部导航条(导航条上另有全程位置刻度);
+   bottom = 导航条行的高度 12 + 6 + 3 */
+.tlb-playhead-global {
+  bottom: 21px;
+}
+.tlb-playhead-global::before {
+  top: 4px;
+}
+/* 三角把手可以直接拖(竖线本身仍不接指针) */
+.tlb-ph-mark {
+  pointer-events: auto;
+  cursor: ew-resize;
+  left: -7px;
+  border-left-width: 7px;
+  border-right-width: 7px;
+  border-top-width: 10px;
+}
+/* 标尺占了顶部,内容层不再需要给旧播放头手柄留的 12px */
+.tlb-scroller .tlb-inner {
+  padding-top: 0;
+}
+.tlb-timeruler {
+  position: sticky;
+  top: 0;
+  z-index: 11;
+  flex: none;
+  box-sizing: border-box;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--hairline);
+  cursor: ew-resize;
+}
+.tlb-tick {
+  position: absolute;
+  bottom: 0;
+  width: 0;
+  height: 8px;
+  border-left: 1px solid var(--ink-faint);
+  pointer-events: none;
+}
+.tlb-tick.is-minor {
+  height: 4px;
+}
+.tlb-tick b {
+  position: absolute;
+  left: 4px;
+  bottom: 6px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* 最后一个刻度的文字放在线的左边,免得探出内容层被裁掉 */
+.tlb-tick.is-end b {
+  left: auto;
+  right: 4px;
+}
+
+/* ===== 序列标签 + 单条序列折叠按钮 ===== */
+.tlb-gutter-cell {
+  flex-direction: column;
+  gap: 0;
+}
+.tlb-gutter-name {
+  display: block;
+  max-width: 100%;
+  line-height: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 行高「中/大」时标签下面的小胶囊按钮:「收起」= 只把这条序列缩到一行;缩回后变「展开」。
+   标签 12px + 按钮 13px = 25px,正好塞进缩到「小」之后的格子 */
+.tlb-gutter-name {
+  line-height: 12px;
+}
+.tlb-gutter-fold {
+  flex: none;
+  height: 13px;
+  padding: 0 5px;
+  margin: 0;
+  border: 1px solid var(--hairline-strong, var(--hairline));
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-faint);
+  font: 500 9px/11px var(--font-mono);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.tlb-gutter-fold:hover {
+  background: var(--fill-subtle);
+  color: var(--ink);
+  border-color: var(--ink-faint);
+}
+.tlb-gutter-fold.is-folded {
+  color: var(--ink-muted);
+  border-color: var(--ink-faint);
+}
+
+/* ===== 一条序列里不许重叠:落点被占用时的「禁止」样式 ===== */
+.tlb-band.is-blocked {
+  background: rgba(229, 72, 77, 0.08);
+  outline: 2px dashed rgba(229, 72, 77, 0.85);
+  outline-offset: -2px;
+  border-radius: 4px;
+  cursor: not-allowed;
+}
+.tlb-card.is-dragging.is-blocked {
+  outline: 2px solid rgba(229, 72, 77, 0.95);
+  outline-offset: -1px;
+  filter: brightness(0.9) saturate(0.6);
+}

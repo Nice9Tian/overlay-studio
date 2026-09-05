@@ -1,0 +1,48 @@
+.pp-track-ctrl {
+  /* 轨道下拉独有样式,避免和外部冲突 */
+  margin-bottom: 12px;
+}
+
+.pp-batch {
+  margin-top: 16px;
+  padding-bottom: 8px;
+  border-top: 1px dashed var(--hairline);
+  padding-top: 12px;
+}
+
+.pp-batch--inset {
+  padding-left: 22px;
+  padding-right: 22px;
+}
+
+.pp-batch-desc {
+  font-size: 12px;
+  color: var(--ink-muted);
+  margin-bottom: 12px;
+  line-height: 1.4;
+}
+
+.pp-batch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.pp-batch-row input[type="range"] {
+  flex: 1;
+}
+
+.pp-batch-reset {
+  background: var(--bg-elev);
+  border: 1px solid var(--hairline);
+  color: var(--ink);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pp-batch-reset:hover {
+  border-color: var(--ink-muted);
+}

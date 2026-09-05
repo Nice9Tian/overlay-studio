@@ -10,7 +10,54 @@ export interface OverlayCard {
   seg?: string;
   /** 检查器忽略标记(用户主动决定):true = 整卡免检;数组 = 忽略指定规则名 */
   lintOff?: boolean | string[];
+  /** 所在序列轨道(1 起,V1/V2…):没写 = 1。只影响编辑台的分轨显示和左栏分组,渲染与导出不看它 */
+  track?: number;
   params: Record<string, unknown>; // 该特效的参数(缺省字段用特效默认值补齐)
+}
+
+/** 轨道自定义名:只认「1 起的整数 → 非空字符串」,名字 trim 后最长 24 字;一个都没有就返回 undefined */
+export function parseTrackNames(raw: unknown): Record<number, string> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const out: Record<number, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const n = Number(k);
+    if (!Number.isInteger(n) || n < 1 || typeof v !== "string") continue;
+    const name = v.trim().slice(0, 24);
+    if (name) out[n] = name;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** 卡片所在轨道(1 起);老档没写就是 1 */
+export function trackOf(card: { track?: number }): number {
+  return Number.isInteger(card.track) && (card.track as number) >= 1 ? (card.track as number) : 1;
+}
+
+/**
+ * 自动分层:一条序列里不放两张时间重叠的卡 —— 一层就是一条序列,和剪辑软件一致。
+ * 按开始时间排序(同时开始的长卡在前,好让整段常驻的底栏落在低序列),
+ * 贪心放进第一条「上一张已经结束」的序列,都放不下就开新序列;首尾正好相接不算重叠。
+ * 只给**完全没有序列信息**的编排用(老档、AI 生成的 JSON、内置示例);
+ * 写了 track 的卡一律尊重原值,不替用户重排。
+ * 返回新数组、保持原顺序不变(画布按数组顺序叠放,不能搅);序列 1 的卡 track 留空,和编辑台其它地方的约定一致。
+ */
+export function packTracks(cards: OverlayCard[]): OverlayCard[] {
+  const order = cards
+    .map((_, i) => i)
+    .sort((a, b) => cards[a].start - cards[b].start || cards[b].end - cards[a].end || a - b);
+  const ends: number[] = [];
+  const out = cards.slice();
+  for (const i of order) {
+    const c = cards[i];
+    let t = ends.findIndex((end) => end <= c.start + 0.001);
+    if (t === -1) {
+      t = ends.length;
+      ends.push(0);
+    }
+    ends[t] = Math.max(ends[t], c.end);
+    out[i] = { ...c, track: t === 0 ? undefined : t + 1 };
+  }
+  return out;
 }
 
 /**
@@ -68,6 +115,10 @@ export interface OverlayDoc {
   /** 全局文字色:盖住皮肤自带的 --hud-ink(主文字),次要文字自动按同色降透明度。
    *  空 = 用皮肤默认值。这是「盖一层」,不改各卡参数,随时清空即恢复。 */
   inkColor?: string;
+  /** 序列轨道数(V1..Vn)。实际显示的轨道数 = max(tracks ?? 1, 卡片里最大的 track);只影响编辑台 */
+  tracks?: number;
+  /** 轨道自定义名(双击序列标签改的):key 是 1 起的轨道号,没有的显示默认「序列n」;只影响编辑台 */
+  trackNames?: Record<number, string>;
   cards: OverlayCard[];
 }
 
@@ -120,7 +171,9 @@ export function parseOverlay(raw: unknown): {
           : Array.isArray(c.lintOff) && c.lintOff.every((r: unknown) => typeof r === "string")
             ? (c.lintOff as string[])
             : undefined;
-      cards.push({ id, kind: c.kind, start: c.start, end: c.end, seg, lintOff, params });
+      // 轨道号:1 起的整数才认,其余当没写(= 1)。老档没有这个字段,全部落在 V1
+      const track = Number.isInteger(c.track) && c.track >= 1 ? (c.track as number) : undefined;
+      cards.push({ id, kind: c.kind, start: c.start, end: c.end, seg, lintOff, track, params });
     }
     cards.sort((a, b) => a.start - b.start);
     // 一张都不认识:多半不是「少几张卡」,而是拿错了文件或者版本对不上。
@@ -133,6 +186,18 @@ export function parseOverlay(raw: unknown): {
       };
     const dropped = [...dropCount].map(([kind, n]) => ({ kind, n }));
     const theme = o.theme === "light" ? "light" : o.theme === "dark" ? "dark" : undefined;
+    // 序列信息:任何一张卡写了 track、或者顶层写了 tracks,都算「这份编排自己管过序列」,原样尊重。
+    // 完全没写的(老档 / AI 生成 / 内置示例)按时间重叠自动分层 —— 以前全落在序列 1 里叠成好几层,
+    // 看起来像多个层共用一条序列,用户明确要求一层一条序列。
+    const declaredTracks = Number.isInteger(o.tracks) && o.tracks >= 1 ? (o.tracks as number) : undefined;
+    const trackNames = parseTrackNames(o.trackNames);
+    const hasTrackInfo =
+      declaredTracks !== undefined || trackNames !== undefined || cards.some((c) => c.track !== undefined);
+    const laid = hasTrackInfo ? cards : packTracks(cards);
+    // 顶层 tracks 一律写上(哪怕只有 1 条):分层结果要自己说得清「我已经管过序列了」。
+    // 否则分成一条序列的编排(序列 1 的卡 track 留空)和从没管过序列的编排长得一模一样,
+    // 刷新恢复 / 导出再导入时会被再分一次层,把用户后来的手工摆放搅乱(审查发现)。
+    const packedMax = laid.length ? Math.max(...laid.map(trackOf)) : 1;
     return {
       dropped: dropped.length ? dropped : undefined,
       doc: {
@@ -145,7 +210,9 @@ export function parseOverlay(raw: unknown): {
         style: ["sketch"].includes(o.style) ? o.style : undefined,
         sideColor: typeof o.sideColor === "string" && /^#[0-9a-fA-F]{3,8}$/.test(o.sideColor) ? o.sideColor : undefined,
         inkColor: typeof o.inkColor === "string" && /^#[0-9a-fA-F]{3,8}$/.test(o.inkColor) ? o.inkColor : undefined,
-        cards,
+        tracks: declaredTracks ?? packedMax,
+        trackNames,
+        cards: laid,
       },
     };
   } catch (e) {

@@ -4,6 +4,10 @@ import type { Control, EffectDef } from "../effects/types";
 import { EFFECT_GROUPS } from "../effects/registry";
 import { kindColor } from "../effects/kindColor";
 import type { OverlayCard } from "../overlay/types";
+import { ParamsPanelCode } from "./ParamsPanelCode";
+import { trackLabel } from "../overlay/cardLabel";
+import "./ParamsPanelTrack.css";
+import "./ParamsPanelCode.css";
 
 interface ParamsPanelProps {
   /** 一次改一批:走一次状态更新,只占一步撤销 */
@@ -26,19 +30,16 @@ interface ParamsPanelProps {
   layer?: { index: number; total: number };
   /** 时间轴模式:删除选中卡片 */
   onDelete?: (id: string) => void;
-  /** 效果库模式:把当前效果(连同调好的参数)插到时间轴的当前时刻 */
-  onAddToTimeline?: () => void;
-  /** 效果库模式:插入落点(秒),写进按钮文案让人按之前就知道加到哪 */
-  addAt?: number;
-  /** 效果库模式:插入后这张卡多长(秒),同样写进文案 */
-  addSec?: number;
-}
-
-/** 落点文案用的 m:ss.s */
-function fmt(t: number) {
-  const m = Math.floor(t / 60);
-  const s = (t % 60).toFixed(1).padStart(4, "0");
-  return `${m}:${s}`;
+  /** 轨道数(≥1),序列1..序列n */
+  trackCount?: number;
+  /** 当前卡的轨道(1 起) */
+  cardTrack?: number;
+  /** 修改当前卡的轨道 */
+  onTrack?: (track: number) => void;
+  /** 轨道自定义名(双击序列标签改的),没有的显示默认「序列n」 */
+  trackNames?: Record<number, string>;
+  batch?: { count: number; scale: number | null; speed: number | null };
+  onApplyAll?: (patch: Record<string, unknown>) => void;
 }
 
 /** 所有卡片通用的大小滑块(画布滚轮同步改这个值)
@@ -481,6 +482,62 @@ function renderControl(
   );
 }
 
+function BatchSection({
+  batch,
+  onApplyAll,
+  inset,
+}: {
+  batch?: { count: number; scale: number | null; speed: number | null };
+  onApplyAll?: (patch: Record<string, unknown>) => void;
+  inset?: boolean;
+}) {
+  if (!batch || batch.count === 0 || !onApplyAll) return null;
+  const scaleVal = batch.scale !== null ? Number(batch.scale.toFixed(2)) : null;
+  const speedVal = batch.speed !== null ? Number(batch.speed.toFixed(2)) : null;
+  return (
+    <section className={`pp-sec pp-batch${inset ? " pp-batch--inset" : ""}`}>
+      <div className="pp-sec-head">
+        <span>所有卡片 · 批量</span>
+      </div>
+      <div className="pp-batch-desc">改的是每张卡自己的参数,会存进文件</div>
+      <div className="ctrl">
+        <div className="ctrl-head">
+          <span>卡片大小(所有卡)</span>
+          <span className="ctrl-val">{scaleVal === null ? "混合" : `${scaleVal}×`}</span>
+        </div>
+        <div className="pp-batch-row">
+          <input
+            type="range"
+            min={0.4}
+            max={3}
+            step={0.05}
+            value={scaleVal === null ? 1 : scaleVal}
+            onChange={(e) => onApplyAll({ scale: Number(e.target.value) })}
+          />
+          <button type="button" className="pp-batch-reset" onClick={() => onApplyAll({ scale: 1 })}>1×</button>
+        </div>
+      </div>
+      <div className="ctrl">
+        <div className="ctrl-head">
+          <span>动画速度(所有卡)</span>
+          <span className="ctrl-val">{speedVal === null ? "混合" : `${speedVal}×`}</span>
+        </div>
+        <div className="pp-batch-row">
+          <input
+            type="range"
+            min={0.3}
+            max={3}
+            step={0.05}
+            value={speedVal === null ? 1 : speedVal}
+            onChange={(e) => onApplyAll({ speed: Number(e.target.value) })}
+          />
+          <button type="button" className="pp-batch-reset" onClick={() => onApplyAll({ speed: 1 })}>1×</button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function ParamsPanel({
   effect,
   params,
@@ -493,15 +550,23 @@ export function ParamsPanel({
   onTimeChange,
   onKindChange,
   onDelete,
-  onAddToTimeline,
-  addAt = 0,
-  addSec = 5,
+  trackCount,
+  cardTrack,
+  onTrack,
+  trackNames,
+  batch,
+  onApplyAll,
 }: ParamsPanelProps) {
   // 「更换特效」搜索词(卡片越来越多,先搜再换)
   const [kindQuery, setKindQuery] = useState("");
-  // 加入时间轴之后不再跳回编辑台,所以按钮自己要给一下「加成功了」的回执
-  const [justAdded, setJustAdded] = useState(false);
-  const addedTimer = useRef<number | null>(null);
+  // 右栏分页:常规(控件)/ 代码(直接看、改这张卡的 JSON)。记住上次选的页,换卡不跳回去
+  const [panelTab, setPanelTab] = useState<"normal" | "code">(() =>
+    localStorage.getItem("ppTab") === "code" ? "code" : "normal",
+  );
+  const switchTab = (t: "normal" | "code") => {
+    setPanelTab(t);
+    localStorage.setItem("ppTab", t);
+  };
   // 选中的卡这一档没有(基础版卡少,别人用专业版做的编排里就会有)。
   // 以前这里是 EFFECTS.find(...)! 直接当它一定在,结果 effect.controls 读了个
   // undefined —— **整页白屏**,连哪张卡出问题都看不到。画布和导出早就写了
@@ -545,6 +610,7 @@ export function ParamsPanel({
           <br />
           内容 / 节奏 / 样式 / 落位。
         </div>
+        <BatchSection batch={batch} onApplyAll={onApplyAll} inset />
       </aside>
     );
   }
@@ -584,7 +650,59 @@ export function ParamsPanel({
         </span>
       </div>
 
+      {/* 分页:常规 = 控件;代码 = 这张卡的 JSON 直接看、直接改 */}
+      <div className="pp-tabs" role="tablist">
+        <button
+          className={`pp-tab ${panelTab === "normal" ? "is-on" : ""}`}
+          role="tab"
+          aria-selected={panelTab === "normal"}
+          onClick={() => switchTab("normal")}
+        >
+          常规
+        </button>
+        <button
+          className={`pp-tab ${panelTab === "code" ? "is-on" : ""}`}
+          role="tab"
+          aria-selected={panelTab === "code"}
+          onClick={() => switchTab("code")}
+          title="查看 / 编辑这张卡的 JSON,查看组件源码"
+        >
+          代码
+        </button>
+      </div>
+
+      {panelTab === "code" ? (
+        <ParamsPanelCode
+          effect={effect}
+          card={card}
+          params={params}
+          onChange={onChange}
+          onChangeMany={onChangeMany}
+          onTimeChange={onTimeChange}
+          onKindChange={onKindChange}
+          onTrack={onTrack}
+          trackCount={trackCount}
+        />
+      ) : (
       <div className="ctrl-list">
+        {card && trackCount !== undefined && cardTrack !== undefined && onTrack !== undefined && (
+          <div className="ctrl pp-track-ctrl">
+            <div className="ctrl-head">
+              <span>所在轨道</span>
+            </div>
+            <select
+              className="ctrl-input kind-select"
+              value={cardTrack}
+              onChange={(e) => onTrack(Number(e.target.value))}
+            >
+              {Array.from({ length: trackCount }, (_, i) => (
+                <option key={i + 1} value={i + 1}>
+                  {trackLabel(i + 1, trackNames)}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         {/* 换卡 + 时间:单卡最常用的两个动作,固定在最上面 */}
         {card && onKindChange && (
           <div className="ctrl">
@@ -718,6 +836,8 @@ export function ParamsPanel({
           );
         })}
 
+        {editMode && <BatchSection batch={batch} onApplyAll={onApplyAll} />}
+
         {/* 叠放:画布按数组顺序画,排在后面的压在上面。这里只在"同时出现的卡"之间挪,
             跟不见面的卡换先后没有视觉意义。挪到头了按钮自动变灰。 */}
         {card && onLayer && layer && layer.total > 1 && (
@@ -774,27 +894,8 @@ export function ParamsPanel({
           </button>
         )}
       </div>
-
-      {/* 效果库的终点动作:挑卡 → 看画面 → 调参 → 加入,一条从左到右的流水线,
-          按钮就长在流水线末端(以前它在顶栏,跟画布比例那些「只改怎么看」的
-          配置混在一起)。文案写全落点和时长,按之前就知道会发生什么。
-          加完不跳回编辑台 —— 时间轴本来两个模式都常驻,新卡在轨道上看得见,
-          停在原地才能连着加好几张。 */}
-      {!editMode && onAddToTimeline && (
-        <div className="pp-foot">
-          <button
-            className={`pp-add-btn ${justAdded ? "is-done" : ""}`}
-            onClick={() => {
-              onAddToTimeline();
-              setJustAdded(true);
-              if (addedTimer.current !== null) window.clearTimeout(addedTimer.current);
-              addedTimer.current = window.setTimeout(() => setJustAdded(false), 1400);
-            }}
-          >
-            {justAdded ? "✓ 已加入,可以接着加下一张" : `＋ 加到 ${fmt(addAt)},时长 ${addSec} 秒`}
-          </button>
-        </div>
       )}
+
     </aside>
   );
 }
