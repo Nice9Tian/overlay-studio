@@ -1,0 +1,130 @@
+/* SidebarTracks.css */
+
+/* ---- 左栏顶级分页:编辑台 / 素材库 ----
+   和下面的轨道页签(.side-tabs,下划线式)长得不一样是故意的:
+   这一行是「你在哪个大页面」,轨道页签是「这个页面里的哪一条轨道」,同一种长相会看混。 */
+.side-top {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  margin-bottom: 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--bg-elev);
+}
+.side-top-tab {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--ink-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  padding: 6px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 160ms ease, color 160ms ease;
+}
+.side-top-tab:hover {
+  color: var(--ink);
+}
+.side-top-tab.is-on {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.side-tracks-scroll {
+  display: flex;
+  overflow-x: auto;
+  flex: 0 1 auto;
+  gap: 6px;
+  min-width: 0;
+  scrollbar-width: none; /* Firefox */
+}
+.side-tracks-scroll::-webkit-scrollbar {
+  display: none; /* Chrome/Safari */
+  height: 0;
+}
+.side-tracks-scroll > .side-tab {
+  flex-shrink: 0;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.side-tracks-srt-tab {
+  flex-shrink: 0;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.side-tabs .tl-clear {
+  flex-shrink: 0;
+}
+
+.fx-item-track .fx-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.fx-item-track .fx-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.side-tracks-summary {
+  font-weight: normal;
+  margin-left: 4px;
+}
+
+.side-tracks-hint {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--ink-muted);
+  text-align: center;
+  background: var(--bg-elev);
+  margin: 0 12px 8px;
+  border-radius: 4px;
+}
+
+.fx-item.is-dragging {
+  opacity: 0.5;
+  outline: 1px dashed var(--accent);
+}
+
+.side-tracks-arrow {
+  background: transparent;
+  border: none;
+  color: var(--ink);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.side-tracks-arrow:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.side-tracks-count {
+  font-size: 11px;
+  color: var(--ink-muted);
+  flex-shrink: 0;
+  margin: 0 4px;
+}
+
+.fx-empty-link {
+  cursor: pointer;
+  text-decoration: underline;
+  color: var(--accent);
+}

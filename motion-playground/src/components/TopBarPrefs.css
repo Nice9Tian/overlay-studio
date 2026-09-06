@@ -1,0 +1,27 @@
+.tbp-cam-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.tbp-cam-path {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.9em;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+}
+.tbp-color-input {
+  width: 44px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+.tbp-val {
+  width: 40px;
+  text-align: right;
+}

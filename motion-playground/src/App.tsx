@@ -4,14 +4,14 @@ import { Sidebar } from "./components/Sidebar";
 import { Canvas } from "./components/Canvas";
 import { ParamsPanel } from "./components/ParamsPanel";
 import { TimelineBar } from "./components/TimelineBar";
-import {
-  TopBar,
-  FORMS,
-  PALETTES,
-  LEGACY_SKIN_MAP,
-  type StudioTab,
-} from "./components/TopBar";
-import { parseOverlay, type OverlayCard, type OverlayDoc } from "./overlay/types";
+import { ConfirmDialog } from "./components/ConfirmDialog";
+import { StageControls } from "./components/StageControls";
+import { TopBar, FORMS, PALETTES, LEGACY_SKIN_MAP } from "./components/TopBar";
+import type { LibrarySelection } from "./library/LibraryTab";
+import { HoverPreview } from "./library/HoverPreview";
+import { addSrtAsset } from "./library/assets";
+import { parseOverlay, trackOf, type OverlayCard, type OverlayDoc } from "./overlay/types";
+import { trackLabel } from "./overlay/cardLabel";
 import { parseSrt, type SrtLine } from "./overlay/srt";
 import { lintOverlay, mergeLintConfig, type LintConfig, type LintIssue } from "./overlay/lint";
 import { uploadErrText } from "./uploadErr";
@@ -37,14 +37,43 @@ function addSecFor(kind: string) {
 }
 
 export default function App() {
-  // 明牌双模式:编辑台(视频+时间轴,像剪映)/ 效果库(挑卡调样式)
-  const [tab, setTab] = useState<StudioTab>("edit");
-  const [selectedId, setSelectedId] = useState(EFFECTS[0].id);
-  // 每个动效各自保存一份参数,切换不丢
-  const [paramsById, setParamsById] = useState<Record<string, any>>(() =>
-    Object.fromEntries(EFFECTS.map((e) => [e.id, { ...e.defaults }])),
-  );
-  const [playToken, setPlayToken] = useState(0);
+  // ---- 确认框 ----
+  // 内嵌浏览器(Claude 桌面应用的浏览器面板、部分 WebView)会把原生 confirm 自动按取消
+  // (实测 3ms 返回 false、不显示任何东西),所有靠 confirm 的守卫都静默失效,
+  // 用户看到的是按钮点了没反应。所以用页内确认框(ConfirmDialog)替换 window.confirm。
+  const [confirmReq, setConfirmReq] = useState<{ message: string; title?: string } | null>(null);
+  const confirmResolver = useRef<((val: boolean) => void) | undefined>(undefined);
+  const confirmOpenRef = useRef(false);
+
+  const askConfirm = (message: string, title?: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      if (confirmResolver.current) {
+        confirmResolver.current(false);
+      }
+      confirmResolver.current = resolve;
+      confirmOpenRef.current = true;
+      setConfirmReq({ message, title });
+    });
+  };
+
+  const handleConfirmClose = (result: boolean) => {
+    confirmOpenRef.current = false;
+    setConfirmReq(null);
+    if (confirmResolver.current) {
+      confirmResolver.current(result);
+      confirmResolver.current = undefined;
+    }
+  };
+
+  // 素材库不再是浮层/独立窗口,它是左栏的一个顶级分页 —— 见 LIBRARY-TAB-DESIGN.md
+  const [sideTab, setSideTab] = useState<"edit" | "library">("edit");
+  // 素材库里鼠标停住的那一项 + 它在屏幕上的矩形,交给 HoverPreview 浮预览(portal 到 body)
+  const [hover, setHover] = useState<{ item: LibrarySelection; anchor: DOMRect | null }>({
+    item: null,
+    anchor: null,
+  });
+  // 当前在用的字幕稿的名字(素材库据此标「使用中」),随自动存档
+  const [srtName, setSrtName] = useState<string | undefined>(undefined);
   const [showGuides, setShowGuides] = useState(true);
   const [showPerson, setShowPerson] = useState(true);
   // 导入的本地视频(object URL):编辑台=停在首帧等播放;效果库=静音循环当背景
@@ -61,10 +90,6 @@ export default function App() {
   const [muted, setMuted] = useState(false);
   // 视频画面缩放:视频自带黑边/比例不满时,放大充满画布(1 = 原始)
   const [videoScale, setVideoScale] = useState(1);
-  // 动画速度倍率:加速/放慢所有卡片动画(导出同步生效)
-  const [animSpeed, setAnimSpeed] = useState(1);
-  // 特效整体缩放(1 = 100%)
-  const [fxScale, setFxScale] = useState(1);
   // 导出透明动效层
   const [exporting, setExporting] = useState(false);
   // 导出进度(每秒轮询 /api/export-status)
@@ -82,6 +107,18 @@ export default function App() {
   const [playing, setPlaying] = useState(false);
   const [selCardId, setSelCardId] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  // ---- 多轨道 ----
+  const [activeTrack, setActiveTrack] = useState(1);
+  const trackCount = useMemo(() => {
+    const cardsMax = overlay?.cards.length ? Math.max(...overlay.cards.map(trackOf)) : 1;
+    return Math.max(overlay?.tracks ?? 1, cardsMax, 1);
+  }, [overlay]);
+  useEffect(() => {
+    if (activeTrack > trackCount) {
+      setActiveTrack(trackCount);
+    }
+  }, [trackCount, activeTrack]);
 
   // ---- 学习闭环:记住本次导入的「AI 初选」,导出时连同终选一起落盘 ----
   const originRef = useRef<OverlayDoc | null>(null);
@@ -184,18 +221,21 @@ export default function App() {
     // 标记要等真正弹过再写:StrictMode 下 effect 会挂载两次,先写标记的话,
     // 第一次写完、第二次看到标记退出,而第一次的定时器又被 cleanup 清掉 —— 谁都弹不出来
     const t = setTimeout(() => {
-      try {
-        if (localStorage.getItem(AUTOSAVE_KEY) || localStorage.getItem(WELCOME_KEY)) return;
-        localStorage.setItem(WELCOME_KEY, "1");
-      } catch {
-        return; // 隐私模式:不打扰
-      }
-      if (
-        window.confirm(
-          "👋 第一次来?\n\n先载入一套 60 秒的示例编排吧 —— 按空格播放,点画布上的卡片改参数,\n时间轴、拖拽、导出都能直接上手试。\n\n(顶栏「🎬 示例」随时能再载入;取消则从空白开始)",
-        )
-      )
-        loadDemoRef.current();
+      void (async () => {
+        try {
+          if (localStorage.getItem(AUTOSAVE_KEY) || localStorage.getItem(WELCOME_KEY)) return;
+          localStorage.setItem(WELCOME_KEY, "1");
+        } catch {
+          return; // 隐私模式:不打扰
+        }
+        if (
+          await askConfirm(
+            "👋 第一次来?\n\n先载入一套 60 秒的示例编排吧 —— 按空格播放,点画布上的卡片改参数,\n时间轴、拖拽、导出都能直接上手试。\n\n(顶栏「🎬 示例」随时能再载入;取消则从空白开始)",
+          )
+        ) {
+          loadDemoRef.current();
+        }
+      })();
     }, 600);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -243,6 +283,7 @@ export default function App() {
         setOverlay(migrated ?? saved.overlay);
         originRef.current = saved.origin ?? null;
         if (Array.isArray(saved.srt) && saved.srt.length) setSrt(saved.srt);
+        if (typeof saved.srtName === "string") setSrtName(saved.srtName);
         setSelCardId(saved.overlay.cards[0]?.id ?? null);
       }
       // 视频:落盘过的走 /_media/ 真实路径,刷新后直接恢复,不用重新导入。
@@ -288,6 +329,7 @@ export default function App() {
             overlay,
             origin: originRef.current,
             srt,
+            srtName,
             // 只存落盘过的真实路径;blob 地址刷新即失效,存了也是坏的
             videoUrl: videoUrl?.startsWith("/_media/") ? videoUrl : undefined,
             savedAt: new Date().toISOString(),
@@ -301,14 +343,14 @@ export default function App() {
     // videoUrl 也要在依赖里:少了它,「清除视频」之后不会重新落盘,存档里留着旧地址,
     // 刷新一次视频又回来了 —— 用户看到的就是「清了个寂寞」。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overlay, srt, videoUrl]);
+  }, [overlay, srt, srtName, videoUrl]);
 
   // ---- 撤销/重做(⌘Z / ⇧⌘Z):存 overlay + 字幕稿 快照 ----
   // 字幕稿也要进快照:「清空」会把它一起清掉,而弹窗承诺了能 ⌘Z 撤销 ——
   // 只记 overlay 的话,撤销回来卡片在、字幕稿没了,自动存档还会顺手把最后一份也覆盖掉。
-  type Snap = { overlay: OverlayDoc | null; srt: SrtLine[] | null };
+  type Snap = { overlay: OverlayDoc | null; srt: SrtLine[] | null; srtName?: string };
   const snapRef = useRef<Snap>({ overlay: null, srt: null });
-  snapRef.current = { overlay, srt };
+  snapRef.current = { overlay, srt, srtName };
   const undoRef = useRef<Snap[]>([]);
   const redoRef = useRef<Snap[]>([]);
   const lastEditRef = useRef(0);
@@ -330,6 +372,7 @@ export default function App() {
   const applySnap = (s: Snap) => {
     setOverlay(s.overlay);
     setSrt(s.srt);
+    setSrtName(s.srtName);
   };
   const undo = () => {
     if (!undoRef.current.length) return;
@@ -348,6 +391,19 @@ export default function App() {
     return Math.max(cardsEnd, videoDur);
   }, [overlay, videoDur]);
 
+  // 导入的视频在时间轴上作为只读的「视频序列n」显示。现在只有一条(videoUrl);
+  // 写成数组是给素材库留的口子:以后多条视频素材按同样的形状喂进来就行
+  const videoTracks = useMemo(
+    () =>
+      (videoUrl && videoDur > 0 ? [{ src: videoUrl, duration: videoDur }] : []).map((v, i) => ({
+        id: `video-${i + 1}`,
+        name: `视频序列${i + 1}`,
+        src: v.src,
+        duration: v.duration,
+      })),
+    [videoUrl, videoDur],
+  );
+
   // 编排体检:密度(张/分钟)+ 同屏峰值,顶栏一眼看节奏够不够紧
   const overlayStats = useMemo(() => {
     if (!overlay || overlay.cards.length === 0) return null;
@@ -364,9 +420,9 @@ export default function App() {
     return { peak, perMin: overlay.cards.length / Math.max(span / 60, 0.1) };
   }, [overlay]);
 
-  // 时钟(仅编辑台):有视频跟视频走(rAF 读 currentTime),没视频自走
+  // 时钟:有视频跟视频走(rAF 读 currentTime),没视频自走
   useEffect(() => {
-    if (tab !== "edit" || !playing) return;
+    if (!playing) return;
     const v = videoRef.current;
     let raf = 0;
     let last = performance.now();
@@ -403,7 +459,7 @@ export default function App() {
       cancelAnimationFrame(raf);
       if (v) v.pause();
     };
-  }, [tab, playing, duration]);
+  }, [playing, duration]);
 
   /**
    * 拖播放头之后,把**卡内录屏**也拉回正确位置。
@@ -441,29 +497,21 @@ export default function App() {
     setTimeout(() => alignCardVideos(t), 260);
   };
 
-  // 从效果库切回编辑台:把视频画面对回时间轴当前位置(效果库里它自己在循环)
-  useEffect(() => {
-    if (tab === "edit" && videoRef.current) {
-      videoRef.current.currentTime = curTRef.current;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
-
   // 最新播放状态存 ref,给全局快捷键读(避免每帧重挂监听)
   const curTRef = useRef(0);
   curTRef.current = curT;
   const selCardIdRef = useRef<string | null>(null);
   selCardIdRef.current = selCardId;
   const deleteRef = useRef<(id: string) => void>(() => {});
-  const tabRef = useRef(tab);
-  tabRef.current = tab;
   const durRef = useRef(0);
   durRef.current = duration;
 
   // 全局快捷键(永远最高优先级;只在打字输入框里让位):
-  // 空格 = 编辑台播放/暂停,效果库重放动画;← → = 快退/快进 0.5s,按住 Shift = 3s
+  // 空格 = 播放/暂停;← → = 快退/快进 0.5s,按住 Shift = 3s
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // 确认框开着时键盘归它
+      if (confirmOpenRef.current) return;
       const el = e.target as HTMLElement;
       const tag = el.tagName;
       const typing =
@@ -479,23 +527,14 @@ export default function App() {
         e.preventDefault();
         if (e.shiftKey) redo();
         else undo();
-      } else if (
-        (e.code === "Backspace" || e.code === "Delete") &&
-        tabRef.current === "edit" &&
-        selCardIdRef.current
-      ) {
+      } else if ((e.code === "Backspace" || e.code === "Delete") && selCardIdRef.current) {
         // Delete = 删除选中的卡
         e.preventDefault();
         deleteRef.current(selCardIdRef.current);
       } else if (e.code === "Space") {
         e.preventDefault();
-        if (tabRef.current === "edit") {
-          if (durRef.current > 0) setPlaying((p) => !p);
-        } else {
-          setPlayToken((t) => t + 1);
-        }
+        if (durRef.current > 0) setPlaying((p) => !p);
       } else if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
-        // 两个模式都可用:效果库里用它挪 ➕ 的插入位置
         e.preventDefault();
         const step = (e.shiftKey ? 3 : 0.5) * (e.code === "ArrowLeft" ? -1 : 1);
         const nt = Math.min(Math.max(0, curTRef.current + step), durRef.current);
@@ -519,13 +558,12 @@ export default function App() {
     }
     // 和「载入示例」一样先问一句。这个入口以前不问:拖错一个 JSON 进窗口,当前编排立刻被换掉,
     // 800ms 后自动存档也跟着被盖 —— ⌘Z 能救,刷新一次就救不回了。
-    if (overlay?.cards.length && !confirm("导入这份编排会替换当前编排(可撤销),继续吗?")) return;
+    if (overlay?.cards.length && !(await askConfirm("导入这份编排会替换当前编排(可撤销),继续吗?"))) return;
     pushHistory(true);
     camClearedRef.current = false; // 新编排:口播视频该挂还得挂
     setOverlay(doc);
     originRef.current = structuredClone(doc); // AI 初选快照,学习闭环用
     setSelCardId(doc.cards[0]?.id ?? null);
-    setTab("edit");
     seek(0);
     setPlaying(false);
     // 自动体检:只提醒不阻断导入。
@@ -564,13 +602,20 @@ export default function App() {
     setLintIssues(lintOverlay(next, LINT_CFG, { duration: durRef.current || undefined }));
   };
 
+  /** 选卡:左栏只列 activeTrack 那条序列的卡,选中谁就把左栏切到谁所在的序列,
+      分层之后选中的卡才不会「明明选着却不在列表里」 */
+  const selectCard = (id: string | null) => {
+    setSelCardId(id);
+    const c = id ? overlay?.cards.find((x) => x.id === id) : undefined;
+    if (c) setActiveTrack(trackOf(c));
+  };
+
   /** 检查面板「定位」:有卡选中那张卡并跳到进场时刻;只有时间点(空白段)就直接跳时间 */
   const handleLintLocate = (issue: LintIssue) => {
     const c = issue.cardId ? overlay?.cards.find((x) => x.id === issue.cardId) : undefined;
     if (!c && issue.at == null) return;
-    setTab("edit");
     if (c) {
-      setSelCardId(c.id);
+      selectCard(c.id);
       seek(c.start + 0.01);
     } else {
       seek(issue.at! + 0.01);
@@ -579,7 +624,7 @@ export default function App() {
 
   /** 载入内置演示编排(public/demo/):示例 SRT + 示例 JSON,不需要自己的视频 */
   const handleLoadDemo = async () => {
-    if (overlay?.cards.length && !confirm("载入示例会替换当前编排(可撤销),继续吗?")) return;
+    if (overlay?.cards.length && !(await askConfirm("载入示例会替换当前编排(可撤销),继续吗?"))) return;
     try {
       const [jsonText, srtText] = await Promise.all([
         fetch("/demo/demo-overlay.json").then((r) => r.text()),
@@ -598,10 +643,12 @@ export default function App() {
       pushHistory(true);
       camClearedRef.current = false;
       setSrt(lines.length ? lines : null);
+      setSrtName(lines.length ? "demo.srt" : undefined);
+      // 示例字幕也登记进素材库的字幕素材,能在那儿看和点句跳转
+      if (lines.length) addSrtAsset({ name: "demo.srt", lines });
       setOverlay(doc);
       originRef.current = structuredClone(doc);
       setSelCardId(doc.cards[0]?.id ?? null);
-      setTab("edit");
       seek(0);
       setPlaying(false);
       setLintIssues(lintOverlay(doc, LINT_CFG, { duration: durRef.current || undefined }));
@@ -611,16 +658,14 @@ export default function App() {
     }
   };
 
-  const handleImportSrt = async (file: File | null) => {
-    if (!file) return;
-    const lines = parseSrt(await file.text());
-    if (!lines.length) {
-      alert("❌ SRT 解析失败:没读到任何字幕条。");
-      return;
-    }
+  /**
+   * 把一份字幕用作本期字幕稿。拖 .srt 进窗口、素材库「用作本期字幕稿」(浮层回调 / 独立窗口 bus)都走这里。
+   * 已有编排且还没有字幕层卡:自动生成一张常驻双语字幕卡(中文先就位,
+   * 英文和 *关键词* 由生成器或你在右栏字幕表里补)
+   */
+  const applySrtLines = (lines: SrtLine[], name?: string) => {
     setSrt(lines);
-    // 已有编排且还没有字幕层卡:自动生成一张常驻双语字幕卡(中文先就位,
-    // 英文和 *关键词* 由生成器或你在右栏字幕表里补)
+    setSrtName(name);
     if (overlay && !overlay.cards.some((c) => c.kind === "caption-track")) {
       const def = EFFECTS.find((e) => e.id === "caption-track");
       const end = Math.ceil(Math.max(...lines.map((l) => l.end)));
@@ -633,9 +678,12 @@ export default function App() {
               .trim()}`,
         )
         .join("\n");
+      // 整段字幕卡从 0 铺到片尾,放在序列 1 会和所有卡叠在一起:单独开一条新序列给它
+      const track = trackCount + 1;
       pushHistory(true);
       setOverlay({
         ...overlay,
+        tracks: track,
         cards: [
           ...overlay.cards,
           {
@@ -643,12 +691,24 @@ export default function App() {
             kind: "caption-track",
             start: 0,
             end,
+            track,
             params: { ...(def?.defaults ?? {}), lines: linesText },
           },
         ],
       });
     }
-    setTab("edit");
+  };
+
+  /** 拖 .srt 进窗口:登记进素材库的字幕素材(素材库窗口里能看到它),再用作本期字幕稿 */
+  const handleImportSrt = async (file: File | null) => {
+    if (!file) return;
+    const lines = parseSrt(await file.text());
+    if (!lines.length) {
+      alert("❌ SRT 解析失败:没读到任何字幕条。");
+      return;
+    }
+    addSrtAsset({ name: file.name, lines });
+    applySrtLines(lines, file.name);
   };
 
   const handleExportJson = () => {
@@ -674,19 +734,21 @@ export default function App() {
     maybeShowLearnTip();
   };
 
-  const handleClearOverlay = () => {
+  const handleClearOverlay = async () => {
     // 「清空」清的是这一条编排:卡片 + 字幕稿 + 自动存档。以前只清卡片,字幕稿原样留着,
     // 下一条片子的卡就长在上一条的字幕上 —— 这也是「清除不干净」的一份。
     // 导入的视频不在此列,它有自己的「清除」按钮,不该被这里顺手带走。
-    if (!confirm("清空这条编排?\n\n卡片和字幕稿都会清掉(导入的视频不受影响)。\n可以用 ⌘Z 撤销。"))
+    if (!(await askConfirm("清空这条编排?\n\n卡片和字幕稿都会清掉(导入的视频不受影响)。\n可以用 ⌘Z 撤销。")))
       return;
     pushHistory(true);
     localStorage.removeItem(AUTOSAVE_KEY);
     setOverlay(null);
     setSrt(null);
+    setSrtName(undefined);
     setPlaying(false);
     setSelCardId(null);
     seek(0);
+    setActiveTrack(1);
   };
 
   loadDemoRef.current = handleLoadDemo;
@@ -732,6 +794,39 @@ export default function App() {
   const handleCardParamChange = (key: string, value: unknown) => {
     patchCardParams({ [key]: value });
   };
+
+  const handleApplyAll = (patch: Record<string, unknown>) => {
+    // 不带 force:滑杆连续拖动时每个 onChange 都会进来,400ms 内的合并成一步撤销,
+    // 否则拖一次要 ⌘Z 几十下才退得回去(和单卡参数滑杆的做法一致)
+    pushHistory();
+    setOverlay((o) =>
+      o
+        ? {
+            ...o,
+            cards: o.cards.map((c) => ({ ...c, params: { ...c.params, ...patch } })),
+          }
+        : o,
+    );
+  };
+
+  const batch = useMemo(() => {
+    if (!overlay || overlay.cards.length === 0) return null;
+    let scale: number | null = Number(overlay.cards[0].params?.scale) || 1;
+    for (const c of overlay.cards) {
+      if ((Number(c.params?.scale) || 1) !== scale) {
+        scale = null;
+        break;
+      }
+    }
+    let speed: number | null = Number(overlay.cards[0].params?.speed) || 1;
+    for (const c of overlay.cards) {
+      if ((Number(c.params?.speed) || 1) !== speed) {
+        speed = null;
+        break;
+      }
+    }
+    return { count: overlay.cards.length, scale, speed };
+  }, [overlay]);
 
   // 更换选中卡片的特效类型(时间/落位保留,参数回到新卡默认值)
   const handleCardKindChange = (kind: string) => {
@@ -827,58 +922,271 @@ export default function App() {
     });
   };
 
-  // 画布直接拖拽/滚轮:给卡片参数打补丁(不触发重放)
+  // 画布直接拖拽/滚轮:给卡片参数打补丁(不触发重放)。画布上只有时间轴的卡,没有卡 id 的拖动不处理
   const handleNudge = (cardId: string | null, patch: Record<string, number>) => {
-    if (cardId) {
-      pushHistory();
-      setOverlay((o) =>
-        o
-          ? {
-              ...o,
-              cards: o.cards.map((c) =>
-                c.id === cardId ? { ...c, params: { ...c.params, ...patch } } : c,
-              ),
-            }
-          : o,
-      );
-    } else {
-      setParamsById((prev) => ({
-        ...prev,
-        [selectedId]: { ...prev[selectedId], ...patch },
-      }));
-    }
+    if (!cardId) return;
+    pushHistory();
+    setOverlay((o) =>
+      o
+        ? {
+            ...o,
+            cards: o.cards.map((c) =>
+              c.id === cardId ? { ...c, params: { ...c.params, ...patch } } : c,
+            ),
+          }
+        : o,
+    );
   };
 
-  // 效果库 → 时间轴:把当前效果(带调好的参数)插到当前时刻
-  const handleAddToTimeline = () => {
-    const start = Math.round(curTRef.current * 10) / 10;
+  /** 在 pos 位置腾出一条轨道:原来 ≥ pos 的卡整体下移一位。拖卡插入、拖效果插入、右键插入三处共用 */
+  const bumpTracksFrom = (cards: OverlayCard[], pos: number): OverlayCard[] =>
+    cards.map((c) => {
+      const t = trackOf(c);
+      return t >= pos ? { ...c, track: t + 1 } : c;
+    });
+  /** 一份编排此刻实际的轨道数(和 trackCount 同一口径,但在 setOverlay 回调里要按传入的 o 算) */
+  const tracksOf = (o: OverlayDoc) =>
+    Math.max(o.tracks ?? 1, o.cards.length ? Math.max(...o.cards.map(trackOf)) : 1, 1);
+
+  /** 建卡入口:时间轴拖放 / 右键插入 / 素材库「加到序列n」共用。params 不传 = 该特效的默认参数。
+      不是「插入新序列」时,目标序列在 start 处已经有卡 → 从序列 1 起找第一条在这里空着的,都占了就开新序列;
+      新卡的默认时长顶到同序列下一张卡为止(拖放会把空档右边界 maxEnd 一起传来),所以永远不会叠出重叠。 */
+  const insertCard = (
+    kind: string,
+    start: number,
+    track: number,
+    opts?: { insert?: boolean; params?: Record<string, unknown>; maxEnd?: number },
+  ) => {
+    const MIN_GAP = 0.5; // 空档比这还窄就当作被占了,免得塞进去一张 0.1 秒的卡
     const baseCards = overlay?.cards ?? [];
     let n = baseCards.length + 1;
     while (baseCards.some((c) => c.id === `card-${n}`)) n++;
+    const params = { ...(opts?.params ?? EFFECTS.find((e) => e.id === kind)?.defaults ?? {}) };
+    const baseTracks = overlay ? tracksOf(overlay) : 1;
+    // 序列 t 在 start 处空着吗?空着就返回这个空档的右边界(右边没卡 = Infinity),占了返回 null
+    const gapEndOn = (t: number): number | null => {
+      let gapEnd = Infinity;
+      for (const c of baseCards) {
+        if (trackOf(c) !== t) continue;
+        if (c.start <= start && c.end > start) return null;
+        if (c.start > start) gapEnd = Math.min(gapEnd, c.start);
+      }
+      return gapEnd - start < MIN_GAP ? null : gapEnd;
+    };
+    let placed = track;
+    let gapEnd = opts?.maxEnd ?? Infinity;
+    if (!opts?.insert) {
+      let g = gapEndOn(track);
+      if (g === null) {
+        placed = baseTracks + 1;
+        for (let t = 1; t <= baseTracks; t++) {
+          g = gapEndOn(t);
+          if (g !== null) {
+            placed = t;
+            break;
+          }
+        }
+      }
+      gapEnd = Math.min(g ?? Infinity, opts?.maxEnd ?? Infinity);
+    }
     const card = {
       id: `card-${n}`,
-      kind: selectedId,
+      kind,
       start,
-      // 整段演示类的卡默认给足 15 秒,其他卡 5 秒
-      end: start + addSecFor(selectedId),
-      params: { ...paramsById[selectedId] },
+      end: Math.min(start + addSecFor(kind), gapEnd),
+      track: placed,
+      params,
     };
+    const theme =
+      params.theme === "light" ? ("light" as const) : params.theme === "dark" ? ("dark" as const) : undefined;
+    pushHistory(true);
+    setOverlay((o) => {
+      if (!o) {
+        return { version: 1 as const, theme, cards: [card], tracks: placed > 1 ? placed : undefined };
+      }
+      let newCards = [...o.cards];
+      const currentTracks = Math.max(o.tracks ?? 1, newCards.length ? Math.max(...newCards.map(trackOf)) : 1);
+      let newTracks = o.tracks;
+
+      if (opts?.insert) {
+        newCards = newCards.map((c) => {
+          const t = trackOf(c);
+          return t >= placed ? { ...c, track: t + 1 } : c;
+        });
+        newTracks = currentTracks + 1;
+      } else {
+        newTracks = placed > 1 ? Math.max(currentTracks, placed) : o.tracks;
+      }
+
+      newCards.push(card);
+      newCards.sort((a, b) => a.start - b.start);
+      return { ...o, cards: newCards, tracks: newTracks };
+    });
+    setSelCardId(card.id);
+    // 新卡可能没落在用户点的那条序列上(被占 → 挪去别处):左栏跟着切过去,加完立刻在列表里看得见
+    setActiveTrack(placed);
+  };
+
+  /** 素材库「＋ 加到 序列n」:用默认参数插到播放头当前时刻。
+      不换分页 —— 新卡在时间轴上直接看得见,想连着加三张也不用来回切 */
+  const handleLibraryAddCard = (kind: string) => {
+    insertCard(kind, Math.round(curTRef.current * 10) / 10, activeTrack);
+  };
+
+  const handleDropEffect = (kind: string, start: number, track: number, opts?: { insert?: boolean; maxEnd?: number }) => {
+    insertCard(kind, start, track, opts);
+  };
+
+  const handleAddTrack = () => {
     pushHistory(true);
     setOverlay((o) =>
-      o
-        ? { ...o, cards: [...o.cards, card].sort((a, b) => a.start - b.start) }
-        : { version: 1 as const, theme: paramsById[selectedId]?.theme, cards: [card] },
+      o ? { ...o, tracks: trackCount + 1 } : { version: 1 as const, cards: [], tracks: 2 }
     );
-    setSelCardId(card.id);
-    // 以前这里 setTab("edit") 把人甩回编辑台:点一下整个界面就变了,是最容易
-    // 让人失去方向的一种反馈,想连着加三张卡也得来回切。时间轴两个模式都常驻,
-    // 新卡在轨道上直接看得见,不用换页确认。
+    setActiveTrack(trackCount + 1);
+  };
+
+  const handleCardTrack = (id: string, track: number, opts?: { insert?: boolean }) => {
+    pushHistory(true);
+    setOverlay((o) => {
+      if (!o) return o;
+      let newCards = o.cards;
+      let currentTracks = Math.max(o.tracks ?? 1, newCards.length ? Math.max(...newCards.map(trackOf)) : 1);
+      let newTracks = o.tracks;
+      
+      if (opts?.insert) {
+        newCards = newCards.map(c => {
+          if (c.id === id) return { ...c, track: track <= 1 ? undefined : track };
+          const t = trackOf(c);
+          return t >= track ? { ...c, track: t + 1 } : c;
+        });
+        newTracks = currentTracks + 1;
+      } else {
+        newCards = newCards.map(c => (c.id === id ? { ...c, track: track <= 1 ? undefined : track } : c));
+      }
+      
+      return { ...o, cards: newCards, tracks: newTracks };
+    });
+    if (opts?.insert) {
+      setActiveTrack(track);
+    }
+  };
+
+  /** 右键菜单「在上方 / 下方插入轨道」:pos 位置腾出一条空轨道,原来 ≥ pos 的整体下移 */
+  /**
+   * 轨道自定义名跟着轨道号走:插入 / 删除 / 换序时轨道号会变,名字要按同一套映射搬家。
+   * f(旧号) → 新号;返回 0 或负数 = 这条轨道没了,名字一起丢。
+   */
+  const remapNames = (
+    names: Record<number, string> | undefined,
+    f: (t: number) => number,
+  ): Record<number, string> | undefined => {
+    if (!names) return undefined;
+    const out: Record<number, string> = {};
+    for (const [k, v] of Object.entries(names)) {
+      const nt = f(Number(k));
+      if (nt >= 1) out[nt] = v;
+    }
+    return Object.keys(out).length ? out : undefined;
+  };
+
+  /** 双击序列标签改名:name 已 trim;空串 = 清掉自定义名、回到默认「序列n」 */
+  const handleRenameTrack = (track: number, name: string) => {
+    const clean = name.trim().slice(0, 24);
+    pushHistory(true);
+    setOverlay((o) => {
+      if (!o) return o;
+      const names: Record<number, string> = { ...(o.trackNames ?? {}) };
+      if (clean) names[track] = clean;
+      else delete names[track];
+      return { ...o, trackNames: Object.keys(names).length ? names : undefined };
+    });
+  };
+
+  const handleInsertTrack = (pos: number) => {
+    pushHistory(true);
+    setOverlay((o) => {
+      if (!o) return { version: 1 as const, cards: [], tracks: Math.max(2, pos) };
+      return {
+        ...o,
+        cards: bumpTracksFrom(o.cards, pos),
+        tracks: tracksOf(o) + 1,
+        trackNames: remapNames(o.trackNames, (t) => (t >= pos ? t + 1 : t)),
+      };
+    });
+    setActiveTrack(pos);
+  };
+
+  /** 拖轨道标签调顺序:把第 from 条轨道挪到第 to 条的位置,中间的整体顺移 */
+  const handleReorderTrack = (from: number, to: number) => {
+    if (from === to) return;
+    pushHistory(true);
+    setOverlay((o) => {
+      if (!o) return o;
+      const tCount = tracksOf(o);
+      const arr = Array.from({ length: tCount }, (_, i) => i + 1);
+      const [moved] = arr.splice(from - 1, 1);
+      arr.splice(to - 1, 0, moved);
+
+      const cards = o.cards.map((c) => {
+        const t = trackOf(c);
+        if (t > tCount || t < 1) return c;
+        const nt = arr.indexOf(t) + 1;
+        return { ...c, track: nt <= 1 ? undefined : nt };
+      });
+      return { ...o, cards, trackNames: remapNames(o.trackNames, (t) => arr.indexOf(t) + 1) };
+    });
+    setActiveTrack((a) => {
+      if (a === from) return to;
+      if (a > trackCount || a < 1) return a;
+      const arr = Array.from({ length: trackCount }, (_, i) => i + 1);
+      const [moved] = arr.splice(from - 1, 1);
+      arr.splice(to - 1, 0, moved);
+      return arr.indexOf(a) + 1;
+    });
+  };
+
+  /**
+   * 右键菜单「删除轨道 Vn」:轨道上的卡一起删,后面的轨道整体上移一位。
+   * 有卡先问一句(页内确认框);⌘Z 可撤销。
+   * 顺序不能反:trackCount 是「max(tracks, 卡里最大 track)」的派生值,只减 tracks 不删卡,
+   * 派生值会把轨道数顶回去 —— 所以删卡和减 tracks 在同一次 setOverlay 里做。
+   */
+  const handleDeleteTrack = async (track: number) => {
+    if (trackCount <= 1) return;
+    const victims = (overlay?.cards ?? []).filter((c) => trackOf(c) === track);
+    if (victims.length) {
+      const ok = await askConfirm(
+        `删除${trackLabel(track)}?\n\n上面的 ${victims.length} 张卡会一起删掉。\n可以用 ⌘Z 撤销。`,
+        "删除轨道",
+      );
+      if (!ok) return;
+    }
+    pushHistory(true);
+    setOverlay((o) => {
+      if (!o) return o;
+      const cards = o.cards
+        .filter((c) => trackOf(c) !== track)
+        .map((c) => {
+          const t = trackOf(c);
+          if (t <= track) return c;
+          const nt = t - 1;
+          return { ...c, track: nt <= 1 ? undefined : nt };
+        });
+      return {
+        ...o,
+        cards,
+        tracks: Math.max(1, tracksOf(o) - 1),
+        trackNames: remapNames(o.trackNames, (t) => (t === track ? 0 : t > track ? t - 1 : t)),
+      };
+    });
+    if (victims.some((v) => v.id === selCardId)) setSelCardId(null);
+    setActiveTrack((a) => (a > track ? a - 1 : a === track ? Math.max(1, track - 1) : a));
   };
 
   const handleExport = async () => {
     if (exporting) return;
-    if (tab === "edit" && (!overlay || overlay.cards.length === 0)) {
-      alert("时间轴上还没有卡片:先 📥 导入 JSON,或去 ✨ 效果库 ➕ 加入卡片。");
+    if (!overlay || overlay.cards.length === 0) {
+      alert("时间轴上还没有卡片:先 📥 导入 JSON,或打开 📚 素材库把卡加进来。");
       return;
     }
     setExporting(true);
@@ -896,7 +1204,7 @@ export default function App() {
       }
     }, 1000);
     // 学习闭环:定稿导出时也落一份「初选 vs 终选」日志
-    if (tab === "edit" && overlay) {
+    if (overlay) {
       fetch("/api/review-log", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -915,7 +1223,7 @@ export default function App() {
       // 导出整条 overlay(时长 = 最后一张卡结束 + 0.5s 尾巴)
       // 尾巴是留给末尾音效收干净的,别用 ceil 取整 —— 28.0s 的片子会被抬到 29s,
       // 白白多出整整一秒空帧(卡片走到 end 就卸掉了,尾巴里什么都没有)。
-      if (!overlay) return; const body = { mode: "timeline", doc: overlay, scale: fxScale, speed: animSpeed, fps: EXPORT_FPS, duration: Math.max(...overlay.cards.map((c) => c.end)) + 0.5 };
+      if (!overlay) return; const body = { mode: "timeline", doc: overlay, scale: 1, speed: 1, fps: EXPORT_FPS, duration: Math.max(...overlay.cards.map((c) => c.end)) + 0.5 };
       const res = await fetch("/api/export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1020,41 +1328,44 @@ export default function App() {
     setVideoUrl(URL.createObjectURL(file));
   };
 
-  // 效果库当前效果。selectedId 一直来自 EFFECTS,理论上找得到,
-  // 但别再用 ! 假装 —— 真找不到就退回第一张,不要往下传 undefined。
-  const effect = useMemo(
-    () => EFFECTS.find((e) => e.id === selectedId) ?? EFFECTS[0],
-    [selectedId],
+  // ---- 素材库 ↔ 编辑台 ----
+  /** 素材库「设为口播视频」(存 doc.cam):空串 = 用户主动清过,自动挂载别再填回来 */
+  const handleSetCam = (src: string) => {
+    camClearedRef.current = !src;
+    setOverlay((o) =>
+      o ? { ...o, cam: src || undefined } : src ? { version: 1 as const, cards: [], cam: src } : o,
+    );
+  };
+
+  /** 素材库「设为画布参考视频」:src 已经在 /_media 里,直接换,不再上传;
+      和顶栏「换视频」一样,全局口播视频原本就是旧主视频的话跟着换 */
+  const applyVideoSrc = (src: string) => {
+    if (!src || src === videoUrl) return;
+    camClearedRef.current = false;
+    const prevUrl = videoUrl;
+    setVideoUrl((prev) => {
+      if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
+      return src;
+    });
+    setOverlay((o) => (o && o.cam && o.cam === prevUrl ? { ...o, cam: src } : o));
+    setPlaying(false);
+  };
+
+  /** 切顶级分页:离开素材库时把悬停预览一起收掉 —— 列表整片卸载,mouseleave 不一定还会来,
+      不清的话那个浮窗会挂在编辑台上不走 */
+  const handleSideTab = (t: "edit" | "library") => {
+    setSideTab(t);
+    if (t !== "library") setHover({ item: null, anchor: null });
+  };
+
+  // 时间轴上所有卡的区间:素材库的字幕句用它标「这句已经有卡覆盖了」
+  const cardSpans = useMemo(
+    () => (overlay?.cards ?? []).map((c) => [c.start, c.end] as [number, number]),
+    [overlay],
   );
-  const params = paramsById[selectedId];
 
-  const handleParamChange = (key: string, value: unknown) => {
-    setParamsById((prev) => ({
-      ...prev,
-      [selectedId]: { ...prev[selectedId], [key]: value },
-    }));
-    setPlayToken((t) => t + 1); // 改参数即重放,便于观察
-  };
-
-  const handleSelect = (id: string) => {
-    setSelectedId(id);
-    setPlayToken((t) => t + 1);
-  };
-
-  // 参数面板:编辑台改选中的卡,效果库改当前效果
-  const inEdit = tab === "edit";
-  const panelEffect =
-    // 这里以前的 ! 是「整页白屏」的根因:编排里只要有一张本档没有的卡,
-    // 查出来就是 undefined。现在照实传下去,由 ParamsPanel 说清楚是哪张。
-    inEdit && selCard ? EFFECTS.find((e) => e.id === selCard.kind) : effect;
-  const panelParams = inEdit && selCard ? selCard.params : params;
-  const panelOnChange = inEdit && selCard ? handleCardParamChange : handleParamChange;
-  // 批量改(预设):编辑台走一次 setOverlay,单卡预览合成一次 setParamsById
-  const panelOnChangeMany = (patch: Record<string, unknown>) => {
-    if (inEdit && selCard) return patchCardParams(patch);
-    setParamsById((prev) => ({ ...prev, [selectedId]: { ...prev[selectedId], ...patch } }));
-    setPlayToken((t) => t + 1);
-  };
+  // 参数面板:改选中的卡。查不到(编排里有本档没有的卡)就照实传 undefined,由 ParamsPanel 说清楚是哪张
+  const panelEffect = selCard ? EFFECTS.find((e) => e.id === selCard.kind) : undefined;
 
   return (
     <div
@@ -1086,26 +1397,12 @@ export default function App() {
         </div>
       )}
       <TopBar
-        tab={tab}
-        onTab={setTab}
-        curT={curT}
-        duration={duration}
-        playing={playing}
         shown={activeCards.length}
         total={overlay?.cards.length ?? 0}
         stats={overlayStats}
-        selCardId={inEdit ? selCardId : null}
-        muted={muted}
-        onToggleMute={() => setMuted((m) => !m)}
-        onPlayPause={() => durRef.current > 0 && setPlaying((p) => !p)}
-        onReset={() => {
-          setPlaying(false);
-          seek(0);
-        }}
+        selCardId={selCardId}
         onImportJson={handleImportJson}
         onLoadDemo={handleLoadDemo}
-        effectName={effect.name}
-        onReplay={() => setPlayToken((t) => t + 1)}
         exporting={exporting}
         hasVideo={videoUrl !== null}
         videoBusy={videoBusy}
@@ -1148,27 +1445,7 @@ export default function App() {
               : o,
           );
         }}
-        showGuides={showGuides}
-        onToggleGuides={() => setShowGuides((v) => !v)}
-        showPerson={showPerson}
-        onTogglePerson={() => setShowPerson((v) => !v)}
-      />
-      <div className="app-body">
-      <Sidebar
-        tab={tab}
-        effects={EFFECTS}
-        selectedId={selectedId}
-        onSelect={handleSelect}
-        onReplay={() => setPlayToken((t) => t + 1)}
-        hasVideo={videoUrl !== null}
-        fxScale={fxScale}
-        videoScale={videoScale}
-        onVideoScale={setVideoScale}
-        animSpeed={animSpeed}
-        onAnimSpeed={setAnimSpeed}
-        exporting={exporting}
-        overlay={overlay}
-        selCardId={selCardId}
+        theme={overlay?.theme}
         onGlobalTheme={handleGlobalTheme}
         skin={overlay?.skin ?? ""}
         onSkin={(s) => setOverlay((o) => (o ? { ...o, skin: s || undefined } : o))}
@@ -1176,39 +1453,56 @@ export default function App() {
         onDocStyle={(s) => setOverlay((o) => (o ? { ...o, style: s || undefined } : o))}
         sideColor={overlay?.sideColor ?? ""}
         onSideColor={(c) => setOverlay((o) => (o ? { ...o, sideColor: c || undefined } : o))}
-        cam={overlay?.cam ?? ""}
-        onSetCam={(src) => {
-          camClearedRef.current = !src; // 清空 = 用户主动清过,自动挂载别再填回来
-          setOverlay((o) => (o ? { ...o, cam: src || undefined } : o));
-        }}
-        srt={srt}
-        curT={curT}
-        onSeek={seek}
-        onImportSrt={handleImportSrt}
+        videoScale={videoScale}
+        onVideoScale={setVideoScale}
+        onExportJson={handleExportJson}
+      />
+      <div className="app-body">
+      <Sidebar
+        overlay={overlay}
+        selCardId={selCardId}
         onSelectCard={(id) => {
-          setSelCardId(id);
+          selectCard(id);
           const c = overlay?.cards.find((x) => x.id === id);
           if (c) seek(c.start + 0.01);
         }}
         onImportJson={handleImportJson}
-        onExportJson={handleExportJson}
         onClearOverlay={handleClearOverlay}
-        videoBusy={videoBusy}
-        onVideo={handleVideo}
-        onFxScale={setFxScale}
-        onExport={handleExport}
+        trackCount={trackCount}
+        trackNames={overlay?.trackNames}
+        activeTrack={activeTrack}
+        onSelectTrack={setActiveTrack}
+        tab={sideTab}
+        onTab={handleSideTab}
+        library={{
+          activeTrack,
+          trackNames: overlay?.trackNames,
+          srtName,
+          curT,
+          cardSpans,
+          videoSrc: videoUrl,
+          camSrc: overlay?.cam,
+          onAddCard: handleLibraryAddCard,
+          onSetVideo: applyVideoSrc,
+          onSetCam: handleSetCam,
+          onUseSrt: (name, lines) => applySrtLines(lines, name),
+          onSeek: seek,
+          onHover: (item, anchor) => setHover({ item, anchor }),
+        }}
       />
 
       <main className="stage-col">
         <Canvas
-          effect={effect}
-          params={params}
-          playToken={playToken}
+          /* 画布永远是时间轴模式(overlayCards 非空);单卡预览是素材库的悬停浮窗(HoverPreview)。
+             effect / params / playToken 是 Canvas 单卡模式的必填项,这里只是占位,不会画出来 */
+          effect={EFFECTS[0]}
+          params={EFFECTS[0].defaults}
+          playToken={0}
           showGuides={showGuides}
           showPerson={showPerson}
           videoUrl={videoUrl}
-          fxScale={fxScale}
-          overlayCards={inEdit ? activeCards : null}
+          fxScale={1}
+          overlayCards={activeCards}
           now={curT}
           overlayTheme={overlay?.theme}
           glow={overlay?.glow ?? false}
@@ -1219,42 +1513,84 @@ export default function App() {
           inkColor={overlay?.inkColor}
           videoMuted={muted}
           videoScale={videoScale}
-          animSpeed={animSpeed}
+          animSpeed={1}
           videoElRef={(el) => (videoRef.current = el)}
           onVideoMeta={setVideoDur}
           onNudge={handleNudge}
           onPickCard={setSelCardId}
         />
-        {/* 时间线两个模式都常驻:效果库里它标记 ➕ 的插入位置 */}
+        {/* 预览画面下面的操作栏:归零 / 播放 / 声音 + 当前时间(从顶栏挪过来的) */}
+        <StageControls
+          curT={curT}
+          duration={duration}
+          playing={playing}
+          muted={muted}
+          onPlayPause={() => durRef.current > 0 && setPlaying((p) => !p)}
+          onReset={() => {
+            setPlaying(false);
+            seek(0);
+          }}
+          onToggleMute={() => setMuted((m) => !m)}
+          showGuides={showGuides}
+          onToggleGuides={() => setShowGuides((v) => !v)}
+          showPerson={showPerson}
+          onTogglePerson={() => setShowPerson((v) => !v)}
+        />
         <TimelineBar
           duration={duration}
           t={curT}
           cards={overlay?.cards ?? []}
+          videoTracks={videoTracks}
           selectedId={selCardId}
-          shown={activeCards.length}
           onSeek={seek}
-          onSelect={setSelCardId}
+          onSelect={selectCard}
           onTimes={handleCardTimes}
+          trackCount={trackCount}
+          onAddTrack={handleAddTrack}
+          onDropEffect={handleDropEffect}
+          onTrack={handleCardTrack}
+          onDeleteTrack={handleDeleteTrack}
+          onInsertTrack={handleInsertTrack}
+          onReorderTrack={handleReorderTrack}
+          trackNames={overlay?.trackNames}
+          onRenameTrack={handleRenameTrack}
         />
       </main>
 
       <ParamsPanel
         effect={panelEffect}
-        params={panelParams}
-        onChange={panelOnChange}
-        onChangeMany={panelOnChangeMany}
-        card={inEdit ? selCard : null}
-        editMode={inEdit}
+        params={selCard?.params}
+        onChange={handleCardParamChange}
+        onChangeMany={patchCardParams}
+        card={selCard}
+        editMode
         onLayer={handleCardLayer}
         layer={layerInfo}
         onTimeChange={handleCardTimeChange}
         onKindChange={handleCardKindChange}
         onDelete={handleDeleteCard}
-        onAddToTimeline={handleAddToTimeline}
-        addAt={curT}
-        addSec={addSecFor(selectedId)}
+        trackCount={trackCount}
+        trackNames={overlay?.trackNames}
+        cardTrack={selCard ? trackOf(selCard) : undefined}
+        onTrack={(track) => selCardId && handleCardTrack(selCardId, track)}
+        batch={batch || undefined}
+        onApplyAll={handleApplyAll}
       />
       </div>
+
+      {/* 素材库的悬停预览:portal 到 body,不受左栏 overflow 影响。
+          它自己另起一份动画,绝不碰 window.__fxExportMs —— 碰了画布上正在播的卡会被冻住 */}
+      <HoverPreview
+        item={hover.item}
+        anchor={hover.anchor}
+        theme={overlay?.theme}
+        skin={overlay?.skin}
+        docStyle={overlay?.style}
+        font={overlay?.font}
+        glow={overlay?.glow ?? false}
+        sideColor={overlay?.sideColor}
+        inkColor={overlay?.inkColor}
+      />
 
       {/* 导出进度浮窗(右下角):渲染帧数 + 预计剩余 + 合成阶段 */}
       {exporting && <ExportProgress prog={exportProg} />}
@@ -1270,6 +1606,14 @@ export default function App() {
           onIgnore={handleLintIgnore}
         />
       )}
+
+      <ConfirmDialog
+        open={!!confirmReq}
+        title={confirmReq?.title}
+        message={confirmReq?.message ?? ""}
+        onConfirm={() => handleConfirmClose(true)}
+        onCancel={() => handleConfirmClose(false)}
+      />
     </div>
   );
 }

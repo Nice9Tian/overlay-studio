@@ -2,10 +2,9 @@ import { VERSION_LABEL, VERSION_TITLE } from "../version";
 import { PROMO_URL } from "../promo";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ACCENT_OPTIONS } from "../effects/hud/accent";
+import { ACCENT_OPTIONS, SKIN_OPTIONS, STYLE_OPTIONS } from "../effects/hud/accent";
 import { CUSTOM_FONTS } from "../fonts";
-
-export type StudioTab = "edit" | "library";
+import "./TopBarPrefs.css";
 
 // 外壳外观 = 两根正交的轴,可任意组合:
 //   风格(form)  = 形状骨架,规则在 App.css 的「风格骨架」一节
@@ -58,26 +57,14 @@ export const LEGACY_SKIN_MAP: Record<string, { form: string; palette: string }> 
 };
 
 interface TopBarProps {
-  tab: StudioTab;
-  onTab: (t: StudioTab) => void;
-  /* 编辑台 */
-  curT: number;
-  duration: number;
-  playing: boolean;
+  /* 编辑台(播放/归零/声音和当前时间已挪到画面下方的 StageControls) */
   shown: number;
   total: number;
   /** 编排体检:密度 + 同屏峰值(无卡时 null) */
   stats: { peak: number; perMin: number } | null;
   selCardId: string | null;
-  muted: boolean;
-  onToggleMute: () => void;
-  onPlayPause: () => void;
-  onReset: () => void;
   onImportJson: (file: File | null) => void;
   onLoadDemo: () => void;
-  /* 效果库 */
-  effectName: string;
-  onReplay: () => void;
   /* 通用 */
   exporting: boolean;
   hasVideo: boolean;
@@ -100,14 +87,25 @@ interface TopBarProps {
   inkColor: string;
   onInkColor: (c: string) => void;
   onUnifyAccent: (accent: string) => void;
-  showGuides: boolean;
-  onToggleGuides: () => void;
-  showPerson: boolean;
-  onTogglePerson: () => void;
+  /** 编排底色:所有卡片亮/暗(存 doc.theme) */
+  theme: "dark" | "light" | undefined;
+  onGlobalTheme: (theme: "dark" | "light") => void;
+  /** 皮肤 / 风格 / 侧边色块(存 doc.skin / doc.style / doc.sideColor;空串 = 默认) */
+  skin: string;
+  onSkin: (s: string) => void;
+  docStyle: string;
+  onDocStyle: (s: string) => void;
+  sideColor: string;
+  onSideColor: (c: string) => void;
+  /** 视频画面缩放(只影响画布预览,不进 JSON) */
+  videoScale: number;
+  onVideoScale: (v: number) => void;
+  /** 导出编排 JSON */
+  onExportJson: () => void;
 }
 
 function usePrefsPopover() {
-  const [prefsOpen, setPrefsOpen] = useState(false);
+  const [activePanel, setActivePanel] = useState<"style" | "display" | null>(null);
   // 面板用 fixed 定位:顶栏为了防横向溢出设了 overflow-x:hidden,而 CSS 规定
   // 一个方向非 visible 时另一个方向的 visible 会被强制算成 auto —— 于是纵向
   // 照样裁,面板在 DOM 里、位置也对,就是画不出来。fixed 的包含块是视口,不受
@@ -117,27 +115,36 @@ function usePrefsPopover() {
   // 面板 portal 到了 body,不再是 prefsRef 的后代 —— 判「点到外面」时得单独认它,
   // 否则点面板里任何一处都会把自己关掉
   const popRef = useRef<HTMLDivElement>(null);
-  const btnRef = useRef<HTMLButtonElement>(null);
-  const openPrefs = () => {
-    const r = btnRef.current?.getBoundingClientRect();
-    if (r) setPos({ top: Math.round(r.bottom + 6), left: Math.round(r.left) });
-    setPrefsOpen((v) => !v);
+  const btnStyleRef = useRef<HTMLButtonElement>(null);
+  const btnDisplayRef = useRef<HTMLButtonElement>(null);
+
+  const togglePanel = (panel: "style" | "display") => {
+    if (activePanel === panel) {
+      setActivePanel(null);
+    } else {
+      const btn = panel === "style" ? btnStyleRef : btnDisplayRef;
+      const r = btn.current?.getBoundingClientRect();
+      if (r) setPos({ top: Math.round(r.bottom + 6), left: Math.round(r.left) });
+      setActivePanel(panel);
+    }
   };
+
   useEffect(() => {
-    if (!prefsOpen) return;
+    if (!activePanel) return;
     const away = (e: MouseEvent) => {
       const t = e.target as Node;
-      if (!prefsRef.current?.contains(t) && !popRef.current?.contains(t)) setPrefsOpen(false);
+      if (!prefsRef.current?.contains(t) && !popRef.current?.contains(t)) setActivePanel(null);
     };
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && setPrefsOpen(false);
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setActivePanel(null);
     document.addEventListener("mousedown", away);
     document.addEventListener("keydown", esc);
     return () => {
       document.removeEventListener("mousedown", away);
       document.removeEventListener("keydown", esc);
     };
-  }, [prefsOpen]);
-  return { prefsOpen, setPrefsOpen, prefsRef, popRef, btnRef, openPrefs, pos };
+  }, [activePanel]);
+  
+  return { activePanel, setActivePanel, prefsRef, popRef, btnStyleRef, btnDisplayRef, togglePanel, pos };
 }
 
 /* 顶栏放不下时,读数按「整格」藏,不能切半个字。
@@ -175,34 +182,17 @@ function useMeterFit() {
   return meterRef;
 }
 
-function fmt(t: number) {
-  const m = Math.floor(t / 60);
-  const s = (t % 60).toFixed(1).padStart(4, "0");
-  return `${m}:${s}`;
-}
-
 /**
- * 通栏仪表条(A1 瑞士编辑部):品牌字标 + 模式 Tab + 读数模块 + 熔接按钮组。
+ * 通栏仪表条(A1 瑞士编辑部):品牌字标 + 读数模块 + 熔接按钮组。
  * 读数全部等宽字;信号橙只给「正在发生的事」:密度、选中卡、主按钮。
  */
 export function TopBar({
-  tab,
-  onTab,
-  curT,
-  duration,
-  playing,
   shown,
   total,
   stats,
   selCardId,
-  muted,
-  onToggleMute,
-  onPlayPause,
-  onReset,
   onImportJson,
   onLoadDemo,
-  effectName,
-  onReplay,
   exporting,
   hasVideo,
   videoBusy,
@@ -220,12 +210,19 @@ export function TopBar({
   inkColor,
   onInkColor,
   onUnifyAccent,
-  showGuides,
-  onToggleGuides,
-  showPerson,
-  onTogglePerson,
+  theme,
+  onGlobalTheme,
+  skin,
+  onSkin,
+  docStyle,
+  onDocStyle,
+  sideColor,
+  onSideColor,
+  videoScale,
+  onVideoScale,
+  onExportJson,
 }: TopBarProps) {
-  const { prefsOpen, prefsRef, popRef, btnRef, openPrefs, pos } = usePrefsPopover();
+  const { activePanel, prefsRef, popRef, btnStyleRef, btnDisplayRef, togglePanel, pos } = usePrefsPopover();
   const meterRef = useMeterFit();
   // 当前风格的原配配色 —— 只用来在下拉里打个「原配」标记,换不换由 App 决定
   const mate = FORMS.find((f) => f.id === form)?.mate ?? "";
@@ -238,17 +235,8 @@ export function TopBar({
         <span className="tb-ver" title={VERSION_TITLE}>{VERSION_LABEL}</span>
       </div>
 
-      {/* 模式切换:一眼看清自己在哪 */}
-      <button className={`tb-tab ${tab === "edit" ? "is-on" : ""}`} onClick={() => onTab("edit")}>
-        编辑台
-      </button>
-      <button
-        className={`tb-tab ${tab === "library" ? "is-on" : ""}`}
-        onClick={() => onTab("library")}
-      >
-        效果库
-      </button>
-      {/* 版本指南入口。放在两个模式切换的紧右边 —— 眼睛本来就扫这一片,
+      {/* 编辑台 / 素材库的切换搬去了左栏顶部的顶级分页,顶栏不再有模式按钮 */}
+      {/* 版本指南入口。放在字标的紧右边 —— 眼睛本来就扫这一片,
           又不混进右边那排干活的按钮(那儿每次导出都会看到,容易烦)。
           地址为空(专业版 / dev)时整个不渲染。 */}
       {PROMO_URL ? (
@@ -265,48 +253,33 @@ export function TopBar({
 
       {/* 读数模块 */}
       <div className="tb-meter" ref={meterRef}>
-        {tab === "edit" ? (
-          <>
-            <div className="tb-cell">
-              <span className="tb-k">Time</span>
-              <span className="tb-v">
-                {fmt(curT)} <i>/ {fmt(duration)}</i>
-              </span>
-            </div>
-            {total > 0 && (
-              <div className="tb-cell">
-                <span className="tb-k">Cards</span>
-                <span className="tb-v">
-                  {shown}<i>/{total}</i>
-                </span>
-              </div>
-            )}
-            {stats && (
-              <div className="tb-cell" title="编排体检:目标 10-16 张/分钟">
-                <span className="tb-k">Density</span>
-                <span className="tb-v">
-                  <b>{stats.perMin.toFixed(1)}</b>
-                  <i>/min</i>
-                </span>
-              </div>
-            )}
-            {stats && (
-              <div className="tb-cell" title="同屏峰值:建议 ≤4">
-                <span className="tb-k">Peak</span>
-                <span className="tb-v">{stats.peak}</span>
-              </div>
-            )}
-            {selCardId && (
-              <div className="tb-cell">
-                <span className="tb-k">Sel</span>
-                <span className="tb-v tb-v--acc">{selCardId}</span>
-              </div>
-            )}
-          </>
-        ) : (
+        {total > 0 && (
           <div className="tb-cell">
-            <span className="tb-k">Effect</span>
-            <span className="tb-v tb-v--acc">{effectName}</span>
+            <span className="tb-k">Cards</span>
+            <span className="tb-v">
+              {shown}<i>/{total}</i>
+            </span>
+          </div>
+        )}
+        {stats && (
+          <div className="tb-cell" title="编排体检:目标 10-16 张/分钟">
+            <span className="tb-k">Density</span>
+            <span className="tb-v">
+              <b>{stats.perMin.toFixed(1)}</b>
+              <i>/min</i>
+            </span>
+          </div>
+        )}
+        {stats && (
+          <div className="tb-cell" title="同屏峰值:建议 ≤4">
+            <span className="tb-k">Peak</span>
+            <span className="tb-v">{stats.peak}</span>
+          </div>
+        )}
+        {selCardId && (
+          <div className="tb-cell">
+            <span className="tb-k">Sel</span>
+            <span className="tb-v tb-v--acc">{selCardId}</span>
           </div>
         )}
       </div>
@@ -316,176 +289,239 @@ export function TopBar({
       {/* 熔接按钮组 */}
       <div className="tb-group">
         <div className="tb-prefs" ref={prefsRef}>
+          {/* 全局风格:存进编排文件,导出时生效 */}
           <button
-            ref={btnRef}
-            className={`tb-gear ${prefsOpen ? "is-on" : ""}`}
-            onClick={openPrefs}
-            title="偏好设置(全局)"
-            aria-expanded={prefsOpen}
+            ref={btnStyleRef}
+            className={`tb-gear ${activePanel === "style" ? "is-on" : ""}`}
+            onClick={() => togglePanel("style")}
+            title="全局风格"
+            aria-expanded={activePanel === "style"}
           >
-            ⚙ 全局设置
+            🎨 全局风格
           </button>
+          {/* 显示设置:只影响本机编辑台预览,不进文件 */}
+          <button
+            ref={btnDisplayRef}
+            className={`tb-gear ${activePanel === "display" ? "is-on" : ""}`}
+            onClick={() => togglePanel("display")}
+            title="显示设置"
+            aria-expanded={activePanel === "display"}
+          >
+            🖥 显示设置
+          </button>
+          
           {/* 挂到 body 上,不能留在顶栏里:「玻璃」风格给 .topbar 加了 backdrop-filter,
               带 filter 的元素会变成后代 fixed 的包含块 —— 面板于是相对顶栏定位、
               又被顶栏的 overflow:hidden 裁成一道白边,看起来就是「设置拉不下来」
               (实测反馈)。 */}
-          {prefsOpen &&
+          {activePanel === "style" &&
             createPortal(
               <div className="tb-prefs-pop" ref={popRef} style={{ top: pos.top, left: pos.left }}>
-              <div className="tb-prefs-kicker">影响成片</div>
+                <div className="tb-prefs-kicker">存进编排文件,导出时生效</div>
 
-              <div className="tb-prefs-row tb-prefs-row--col">
-                <span>全局主色</span>
-                <div className="tb-swatches">
-                  {ACCENT_OPTIONS.map((a) => (
+                <div className="tb-prefs-row">
+                  <span>全局底色</span>
+                  <div className="seg">
                     <button
-                      key={a.value}
-                      className={`tb-sw acc-${a.value}`}
-                      title={`把所有卡的强调色统一成「${a.label}」`}
-                      onClick={() => onUnifyAccent(a.value)}
+                      className={`seg-btn ${theme !== "light" ? "is-on" : ""}`}
+                      onClick={() => onGlobalTheme("dark")}
                       disabled={!hasDoc}
                     >
-                      {a.label}
+                      🌙 暗底
                     </button>
-                  ))}
+                    <button
+                      className={`seg-btn ${theme === "light" ? "is-on" : ""}`}
+                      onClick={() => onGlobalTheme("light")}
+                      disabled={!hasDoc}
+                    >
+                      🌞 亮底
+                    </button>
+                  </div>
                 </div>
-                <div className="tb-prefs-hint">
-                  {hasDoc ? "点一下改写所有卡的强调色,可撤销" : "先加卡片或导入编排"}
-                </div>
-              </div>
 
-              <div className="tb-prefs-row">
-                <span>全局文字色</span>
-                <span className="tb-prefs-ctl">
-                  <input
-                    type="color"
-                    value={inkColor || "#ffffff"}
-                    onChange={(e) => onInkColor(e.target.value)}
+                <div className="tb-prefs-row tb-prefs-row--col">
+                  <span>全局主色</span>
+                  <div className="tb-swatches">
+                    {ACCENT_OPTIONS.map((a) => (
+                      <button
+                        key={a.value}
+                        className={`tb-sw acc-${a.value}`}
+                        title={`把所有卡的强调色统一成「${a.label}」`}
+                        onClick={() => onUnifyAccent(a.value)}
+                        disabled={!hasDoc}
+                      >
+                        {a.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="tb-prefs-hint">
+                    {hasDoc ? "点一下改写所有卡的强调色,可撤销" : "先加卡片或导入编排"}
+                  </div>
+                </div>
+
+                <div className="tb-prefs-row">
+                  <span>全局文字色</span>
+                  <span className="tb-prefs-ctl">
+                    <input
+                      type="color"
+                      value={inkColor || "#ffffff"}
+                      onChange={(e) => onInkColor(e.target.value)}
+                      disabled={!hasDoc}
+                    />
+                    <button className="tb-mini" onClick={() => onInkColor("")} disabled={!hasDoc || !inkColor}>
+                      恢复皮肤默认
+                    </button>
+                  </span>
+                </div>
+
+                <div className="tb-prefs-row">
+                  <span>全局字体</span>
+                  <select
+                    className="tb-prefs-ctl"
+                    value={font}
+                    onChange={(e) => onFont(e.target.value)}
                     disabled={!hasDoc}
-                  />
-                  <button className="tb-mini" onClick={() => onInkColor("")} disabled={!hasDoc || !inkColor}>
-                    恢复皮肤默认
+                  >
+                    <option value="">默认(IBM Plex Sans SC)</option>
+                    {CUSTOM_FONTS.map((f) => (
+                      <option key={f} value={f}>{f}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="tb-prefs-row">
+                  <span>文字光晕(发虚就关)</span>
+                  <button
+                    className={`switch ${glow ? "is-on" : ""}`}
+                    role="switch"
+                    aria-checked={glow}
+                    onClick={onToggleGlow}
+                    disabled={!hasDoc}
+                  >
+                    <span className="switch-knob" />
                   </button>
-                </span>
-              </div>
+                </div>
 
-              <div className="tb-prefs-row">
-                <span>全局字体</span>
-                <select
-                  className="tb-prefs-ctl"
-                  value={font}
-                  onChange={(e) => onFont(e.target.value)}
-                  disabled={!hasDoc}
-                >
-                  <option value="">默认(IBM Plex Sans SC)</option>
-                  {CUSTOM_FONTS.map((f) => (
-                    <option key={f} value={f}>{f}</option>
-                  ))}
-                </select>
-              </div>
+                <div className="tb-prefs-row">
+                  <span>皮肤</span>
+                  <select
+                    className="tb-prefs-ctl"
+                    value={skin}
+                    onChange={(e) => onSkin(e.target.value)}
+                    disabled={!hasDoc}
+                  >
+                    {SKIN_OPTIONS.map((s) => (
+                      <option key={s.value} value={s.value}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-              <div className="tb-prefs-row">
-                <span>文字光晕(发虚就关)</span>
-                <button
-                  className={`switch ${glow ? "is-on" : ""}`}
-                  role="switch"
-                  aria-checked={glow}
-                  onClick={onToggleGlow}
-                  disabled={!hasDoc}
-                >
-                  <span className="switch-knob" />
-                </button>
-              </div>
+                <div className="tb-prefs-row">
+                  <span>风格</span>
+                  <select
+                    className="tb-prefs-ctl"
+                    value={docStyle}
+                    onChange={(e) => onDocStyle(e.target.value)}
+                    disabled={!hasDoc}
+                  >
+                    {STYLE_OPTIONS.map((s) => (
+                      <option key={s.value} value={s.value}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-              <div className="tb-prefs-kicker">仅编辑时可见 · 不影响导出</div>
+                {docStyle === "sketch" && (
+                  <div className="tb-prefs-row">
+                    <span>侧边色块</span>
+                    <span className="tb-prefs-ctl">
+                      <input
+                        type="color"
+                        className="tbp-color-input"
+                        value={sideColor || "#f09a3e"}
+                        onChange={(e) => onSideColor(e.target.value)}
+                        disabled={!hasDoc}
+                      />
+                      <button className="tb-mini" onClick={() => onSideColor("")} disabled={!hasDoc}>
+                        清除
+                      </button>
+                    </span>
+                  </div>
+                )}
 
-              {/* 风格/配色本来摆在顶栏里,两个下拉占掉近 300px —— 控件大一档的
-                  Material/终端/粗野一上身,读数区就被挤没了。外观是设一次就不动的
-                  东西,收进这里最合适。 */}
-              <div className="tb-prefs-row">
-                <span>编辑台风格</span>
-                <select
-                  className="tb-prefs-ctl"
-                  value={form}
-                  onChange={(e) => onForm(e.target.value)}
-                  title="风格:换编辑台的形状骨架(圆角/边框/控件长相),不影响导出画面"
-                >
-                  {FORMS.map((f) => (
-                    <option key={f.id} value={f.id} title={f.hint}>
-                      ◱ {f.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+                {/* 口播视频(doc.cam)搬去了素材库:视频素材 →「设为口播视频」 */}
+              </div>,
+              document.body,
+            )}
 
-              <div className="tb-prefs-row">
-                <span>编辑台配色</span>
-                <select
-                  className="tb-prefs-ctl"
-                  value={palette}
-                  onChange={(e) => onPalette(e.target.value)}
-                  title="配色:换编辑台的颜色,不影响导出画面。任何配色都能配任何风格"
-                >
-                  {PALETTES.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      🎨 {c.name}
-                      {c.id === mate ? " · 原配" : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
+          {activePanel === "display" &&
+            createPortal(
+              <div className="tb-prefs-pop" ref={popRef} style={{ top: pos.top, left: pos.left }}>
+                <div className="tb-prefs-kicker">只影响这台电脑上的编辑台,不进文件</div>
 
-              <div className="tb-prefs-row">
-                <span>安全区参考线</span>
-                <button
-                  className={`switch ${showGuides ? "is-on" : ""}`}
-                  role="switch"
-                  aria-checked={showGuides}
-                  onClick={onToggleGuides}
-                >
-                  <span className="switch-knob" />
-                </button>
-              </div>
+                <div className="tb-prefs-row">
+                  <span>编辑台风格</span>
+                  <select
+                    className="tb-prefs-ctl"
+                    value={form}
+                    onChange={(e) => onForm(e.target.value)}
+                    title="风格:换编辑台的形状骨架(圆角/边框/控件长相),不影响导出画面"
+                  >
+                    {FORMS.map((f) => (
+                      <option key={f.id} value={f.id} title={f.hint}>
+                        ◱ {f.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-              <div className="tb-prefs-row">
-                <span>人物占位</span>
-                <button
-                  className={`switch ${showPerson ? "is-on" : ""}`}
-                  role="switch"
-                  aria-checked={showPerson}
-                  onClick={onTogglePerson}
-                >
-                  <span className="switch-knob" />
-                </button>
-              </div>
+                <div className="tb-prefs-row">
+                  <span>编辑台配色</span>
+                  <select
+                    className="tb-prefs-ctl"
+                    value={palette}
+                    onChange={(e) => onPalette(e.target.value)}
+                    title="配色:换编辑台的颜色,不影响导出画面。任何配色都能配任何风格"
+                  >
+                    {PALETTES.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        🎨 {c.name}
+                        {c.id === mate ? " · 原配" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 安全区参考线 / 人物占位两个开关挪到了画面下方的播放操作栏(StageControls):
+                    它们是「看画面时顺手切」的东西,放在画面旁边比藏在面板里顺手 */}
+
+                <div className="tb-prefs-row">
+                  <span>视频画面缩放</span>
+                  <span className="tb-prefs-ctl">
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={2}
+                      step={0.05}
+                      value={videoScale}
+                      onChange={(e) => onVideoScale(Number(e.target.value))}
+                    />
+                    <span className="tbp-val">{Math.round(videoScale * 100)}%</span>
+                  </span>
+                </div>
               </div>,
               document.body,
             )}
         </div>
-        {tab === "edit" ? (
-          <>
-            <button className="tb-btn" onClick={onPlayPause} disabled={duration <= 0}>
-              {playing ? "⏸ 暂停" : "▶ 播放"}
-            </button>
-            <button className="tb-btn" onClick={onReset}>
-              归零
-            </button>
-            <button className="tb-btn" onClick={onToggleMute} title="视频声音">
-              {muted ? "静音" : "声音"}
-            </button>
-            <button className="tb-btn" onClick={() => jsonRef.current?.click()}>
-              导入 JSON
-            </button>
-          </>
-        ) : (
-          <>
-            <button className="tb-btn" onClick={onReplay}>
-              ↺ 重放动画
-            </button>
-          </>
-        )}
-        {/* 示例两个标签页都放:在效果库里点会载入演示并自动切回编辑台。
-            实测反馈:只放编辑台的话,人在效果库页会以为这个按钮"没有了" */}
+        <button className="tb-btn" onClick={() => jsonRef.current?.click()}>
+          导入 JSON
+        </button>
+        <button className="tb-btn" onClick={onExportJson} disabled={!hasDoc}>
+          📤 导出 JSON
+        </button>
         <button className="tb-btn" onClick={onLoadDemo} title="载入内置演示编排,不需要自己的视频">
           🎬 示例
         </button>
@@ -496,11 +532,9 @@ export function TopBar({
         >
           {videoBusy ? "⏳ 上传中…" : hasVideo ? "换视频" : "导入视频"}
         </button>
-        {tab === "edit" && (
-          <button className="tb-btn tb-btn--primary" onClick={onExport} disabled={exporting}>
-            {exporting ? "导出中…" : "⬇ 导出透明 MOV"}
-          </button>
-        )}
+        <button className="tb-btn tb-btn--primary" onClick={onExport} disabled={exporting}>
+          {exporting ? "导出中…" : "⬇ 导出透明 MOV"}
+        </button>
       </div>
 
       <input
@@ -520,8 +554,6 @@ export function TopBar({
         style={{ display: "none" }}
         onChange={(e) => {
           onVideo(e.target.files?.[0] ?? null);
-          // 清掉选中值:不清的话重选同一个文件不会触发 change(上传失败后重试就是这一幕),
-          // 侧栏那个入口和上面的 JSON 入口都清了,只有这里漏了
           if (videoRef.current) videoRef.current.value = "";
         }}
       />
