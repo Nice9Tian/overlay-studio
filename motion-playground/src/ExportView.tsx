@@ -1,5 +1,6 @@
 import { inkVars } from "./effects/hud/accent";
 import { useEffect, useState } from "react";
+import { flushSync } from "react-dom";
 import "./fonts"; // 自定义字体注册:导出端也要有 @font-face,成片字体才和预览一致
 import { EFFECTS } from "./effects/registry";
 import { FxSpeedScope } from "./effects/FxSpeedScope";
@@ -118,7 +119,12 @@ function TimelineExport({ doc, scale, speed }: { doc: OverlayDoc; scale: number;
     (window as unknown as { __setExportT?: (sec: number) => void }).__setExportT = (sec) => {
       // 卡内计时钩子的权威时钟(见 useAnimation.clockNow)
       (window as unknown as { __fxExportMs?: number }).__fxExportMs = sec * 1000;
-      setT(sec);
+      // flushSync:让这一帧的挂载/卸载在 __setExportT 返回前就提交完。
+      // 裸 setT 是异步的,提交会落在导出脚本随后那 33ms 虚拟时间推进的途中 —— 落点每次不同,
+      // 卡片 start 那一帧有时截到了、有时截不到,之后整段进场过渡也跟着错一帧
+      // (2026-09-06 实测:修完 useEnter 和动画步进后,残留的 4~14 帧噪声全在各卡 start 附近)。
+      // 同步提交后,脚本推进时钟时 DOM 已经是这一帧该有的样子,动画步进拿到的也是完整的动画表。
+      flushSync(() => setT(sec));
     };
   }, []);
 

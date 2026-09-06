@@ -82,6 +82,11 @@ desktop/
    这是作者留下的逐帧不确定 bug 的根因:两层 rAF 落在本帧还是下一帧取决于虚拟时间推进期间实际跑掉几次 rAF,
    16 张卡的进场过渡整段错一帧,同一份编排导两次约百帧不同(2026-09-06 实测,原版脚本)。作者已经给 useCountUp /
    useElapsed / useProgress 做过同样的改法,漏了 useEnter。预览路径(exMs 为 null)一字不变。这是第四个要跟上游合并的文件。
+8. `src/ExportView.tsx` 的 `__setExportT`:`setT(sec)` 改成 `flushSync(() => setT(sec))`。裸 setT 是异步提交,落在导出脚本随后 33ms
+   虚拟时间推进的途中,卡片 start 那一帧有时截到有时截不到(修完 7 和 3b 之后残留的 4~14 帧噪声全在各卡 start 附近)。第五个要合并的文件。
+3b. `scripts/export-frames.mjs` 另两处确定性修补:开闸前把 `document.fonts` 里每一张声明过的字体都 `load()` 完(只等 fonts.ready 不够,
+   没用到的字重要到第一次使用才下载,加载完成落在哪一帧随机);每帧动画步进时,本帧**新建**的动画钉成 `currentTime = ms` 而不是 `+= ms`
+   (它在推进途中创建,已自然走了一截随机量)。三处修完后,同一份 demo 编排复跑的不一致帧数:113 → 82(useEnter)→ 60(字体)→ 8(新建动画)→ 见 BUILD-REPORT 第 7 节。
 
 ## Rust 行为(任务 B,`desktop/src-tauri/`)
 

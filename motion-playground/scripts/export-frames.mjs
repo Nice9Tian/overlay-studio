@@ -656,6 +656,24 @@ async function renderFrames(page, client, from, to, { shoot = true, timings = nu
       if (!pending) break;
       await new Promise((r) => setTimeout(r, 10));
     }
+    // 卡内的 <img>(截图证据、logo 之类,见 MediaImg / imgRetry)也是在真实时间里异步加载解码的,
+    // 只等视频帧图不等它们,卡片挂载那一帧就时而截到图、时而截到空位 —— 修完进场/字体/动画步进后
+    // 残留的那十来帧噪声全在带图的卡 start 附近(2026-09-06 实测)。截图前等到每张图都 complete
+    // 且解码完;快进段不截图,不用等。最多等 2 秒,加载失败的图 complete 也是 true,不会卡死。
+    if (shoot) {
+      for (let k = 0; k < 200; k++) {
+        const ready = await page
+          .evaluate(async () => {
+            const imgs = Array.from(document.images);
+            if (imgs.some((im) => !im.complete)) return false;
+            await Promise.all(imgs.map((im) => (im.naturalWidth ? im.decode().catch(() => {}) : null)));
+            return true;
+          })
+          .catch(() => true);
+        if (ready) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    }
     const p = waitBudgetExpired(client);
     // 先给它挂一个空的 catch。下面那句 client.send 一旦先抛(并行时最常见:另一个
     // 工作器出事、浏览器被收尾关掉,这条连接立刻 "Target closed"),`await p` 就永远
@@ -674,11 +692,23 @@ async function renderFrames(page, client, from, to, { shoot = true, timings = nu
     // 整个卡死在第一帧,短卡全程隐形 —— 就是"同一编排有的导出好有的丢卡"的根源)。
     // 从本版起不再信任任何钟:每推进一帧虚拟时间,就把页面里所有动画显式
     // 暂停并手动 +intervalMs。动画进度与时间轴逐帧锁死,与机器负载无关。
+    // 本帧新出现的动画不能「+ms」而要「=ms」:
+    // 进场过渡是在 __setExportT 之后的 React 提交里创建的,而提交发生在上面那段虚拟时间推进的
+    // 途中,创建时刻落在这 33ms 里的哪一点每次都不同。它从创建起已经自然走了(33ms − 落点),
+    // 再 +ms 就多走了一截随机量 —— 这就是修完 useEnter 之后还剩的 15~60 帧噪声
+    // (2026-09-06 实测,差异帧全落在各卡进场附近)。按定义,这一帧里新建的动画到截图时
+    // 应该恰好走完一帧,所以直接钉成 ms;老动画照旧 +ms。见过的动画记在 WeakSet 里,卸载即释放。
     await page.evaluate((ms) => {
+      const seen = (window.__fxSeenAnims ??= new WeakSet());
       for (const a of document.getAnimations()) {
         try {
           if (a.playState !== "paused") a.pause();
-          a.currentTime = Number(a.currentTime ?? 0) + ms;
+          if (seen.has(a)) {
+            a.currentTime = Number(a.currentTime ?? 0) + ms;
+          } else {
+            seen.add(a);
+            a.currentTime = ms;
+          }
         } catch { /* 已结束/已移除的动画,跳过 */ }
       }
     }, intervalMs);
