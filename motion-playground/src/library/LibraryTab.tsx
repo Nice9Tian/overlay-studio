@@ -28,10 +28,12 @@ import {
   type VideoAsset,
   type SrtAsset,
 } from "./assets";
+import { listPresets, removePreset, subscribePresets, type CardPreset } from "../overlay/presets";
 import "./LibraryTab.css";
 
 export type LibrarySelection =
   | { type: "effect"; id: string } // id = 特效 kind
+  | { type: "preset"; id: string } // id = CardPreset.id(AI 助手 / 用户另存的「kind + 调好的 params」)
   | { type: "video"; id: string } // id = VideoAsset.id
   | { type: "srt"; id: string } // id = SrtAsset.id
   | null;
@@ -51,6 +53,8 @@ export interface LibraryTabProps {
   camSrc?: string;
   /** ＋ 加到 序列n(播放头处、默认参数) */
   onAddCard: (kind: string) => void;
+  /** 预设「＋ 加到 序列n」:同上,但 params 用预设里存的那份 */
+  onAddPreset: (kind: string, params: Record<string, unknown>) => void;
   /** 设为画布参考视频 */
   onSetVideo: (src: string) => void;
   /** 设为口播视频 */
@@ -107,6 +111,7 @@ export function LibraryTab({
   videoSrc,
   camSrc,
   onAddCard,
+  onAddPreset,
   onSetVideo,
   onSetCam,
   onUseSrt,
@@ -116,6 +121,7 @@ export function LibraryTab({
 }: LibraryTabProps) {
   const [videoAssets, setVideoAssets] = useState<VideoAsset[]>([]);
   const [srtAssets, setSrtAssets] = useState<SrtAsset[]>([]);
+  const [presets, setPresets] = useState<CardPreset[]>([]);
   const [selection, setSelection] = useState<LibrarySelection>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -123,19 +129,28 @@ export function LibraryTab({
   const refresh = useCallback(() => {
     const vs = listVideoAssets();
     const ss = listSrtAssets();
+    const ps = listPresets();
     setVideoAssets(vs);
     setSrtAssets(ss);
+    setPresets(ps);
     // 删掉的正好是选中的那条就清掉选择
     setSelection((s) => {
       if (s?.type === "video" && !vs.some((v) => v.id === s.id)) return null;
       if (s?.type === "srt" && !ss.some((a) => a.id === s.id)) return null;
+      if (s?.type === "preset" && !ps.some((p) => p.id === s.id)) return null;
       return s;
     });
   }, []);
 
   useEffect(() => {
     refresh();
-    return subscribeAssets(refresh);
+    // 预设表和素材登记表是两个模块、两套订阅(AI 助手通过 MCP 建预设时走 presets.ts 的通知)
+    const offAssets = subscribeAssets(refresh);
+    const offPresets = subscribePresets(refresh);
+    return () => {
+      offAssets();
+      offPresets();
+    };
   }, [refresh]);
 
   /* ---------------- 悬停:只报给 App,自己不渲染浮窗 ---------------- */
@@ -191,6 +206,7 @@ export function LibraryTab({
       ...fxGroups.flatMap((g) => g.effects.map((e) => ({ type: "effect" as const, id: e.id }))),
       ...videoAssets.map((v) => ({ type: "video" as const, id: v.id })),
       ...srtAssets.map((a) => ({ type: "srt" as const, id: a.id })),
+      ...presets.map((p) => ({ type: "preset" as const, id: p.id })),
     ];
     if (items.length === 0) return;
     const onKey = (e: KeyboardEvent) => {
@@ -208,7 +224,7 @@ export function LibraryTab({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [hotkeys, fxGroups, videoAssets, srtAssets, selection]);
+  }, [hotkeys, fxGroups, videoAssets, srtAssets, presets, selection]);
 
   // 选中的项滚进可视区(键盘连按时不会走丢)
   useEffect(() => {
@@ -261,6 +277,9 @@ export function LibraryTab({
   const selectedEffect = selection?.type === "effect" ? EFFECTS.find((e) => e.id === selection.id) : undefined;
   const selectedVideo = selection?.type === "video" ? videoAssets.find((v) => v.id === selection.id) : undefined;
   const selectedSrt = selection?.type === "srt" ? srtAssets.find((a) => a.id === selection.id) : undefined;
+  const selectedPreset = selection?.type === "preset" ? presets.find((p) => p.id === selection.id) : undefined;
+  // 预设指向的 kind 这一版没有(基础版卡少 / 卡被下掉)→ 灰显、不能加
+  const selectedPresetDef = selectedPreset ? EFFECTS.find((e) => e.id === selectedPreset.kind) : undefined;
 
   // 展开的字幕:播放头落在哪句(换句了才滚一次,别每帧都滚)
   const nowIdx = selectedSrt ? selectedSrt.lines.findIndex((l) => curT >= l.start && curT < l.end) : -1;
@@ -533,6 +552,64 @@ export function LibraryTab({
             );
           })}
         </div>
+
+        <div className="fx-group">
+          <div className="fx-group-title">
+            预设
+            <span className="fx-group-count">{presets.length}</span>
+          </div>
+          {presets.length === 0 ? (
+            <div className="lib-empty">
+              还没有预设。让右栏的 AI 助手「做一张……的卡」,或者调好一张卡的参数后另存为预设,都会出现在这里。
+            </div>
+          ) : null}
+          {presets.map((p) => {
+            const on = selection?.type === "preset" && selection.id === p.id;
+            const def = EFFECTS.find((e) => e.id === p.kind);
+            return (
+              <div
+                key={p.id}
+                role="button"
+                tabIndex={0}
+                className={`fx-item lib-item ${on ? "is-on" : ""} ${def ? "" : "is-missing"}`}
+                title={def ? p.description || p.name : `这张卡(${p.kind})这一版没有`}
+                onClick={() => setSelection({ type: "preset", id: p.id })}
+                onKeyDown={(ev) => {
+                  if (ev.key === "Enter" || ev.key === " ") {
+                    ev.preventDefault();
+                    setSelection({ type: "preset", id: p.id });
+                  }
+                }}
+                onMouseEnter={(ev) =>
+                  emitHover({ type: "preset", id: p.id }, ev.currentTarget.getBoundingClientRect())
+                }
+              >
+                <span className="lib-item-main">
+                  <span className="lib-item-name">
+                    <i className="fx-dot" style={{ background: kindColor(p.kind) }} />
+                    <span className="lib-item-title">{p.name}</span>
+                    <span className="lib-badge">{p.source === "ai" ? "AI" : "手动"}</span>
+                  </span>
+                  <span className="lib-item-meta">
+                    {def ? def.name : `${p.kind}(这一版没有)`}
+                    {" · "}
+                    {new Date(p.createdAt).toLocaleDateString()}
+                  </span>
+                </span>
+                <button
+                  className="lib-del"
+                  title="删除这个预设"
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    removePreset(p.id);
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       <div className="lib-foot">
@@ -542,6 +619,21 @@ export function LibraryTab({
               ＋ 加到 {trackLabel(activeTrack, trackNames)}
             </button>
             <span className="lib-hint">或直接拖到时间轴的任意位置</span>
+          </>
+        ) : selectedPreset ? (
+          <>
+            <button
+              className="lib-btn-primary"
+              disabled={!selectedPresetDef}
+              onClick={() => onAddPreset(selectedPreset.kind, selectedPreset.params)}
+            >
+              ＋ 加到 {trackLabel(activeTrack, trackNames)}
+            </button>
+            <span className="lib-hint">
+              {selectedPresetDef
+                ? `${selectedPresetDef.name} 的预设,带着调好的参数上时间轴`
+                : `这张卡(${selectedPreset.kind})这一版没有,不能加`}
+            </span>
           </>
         ) : selectedVideo ? (
           <>

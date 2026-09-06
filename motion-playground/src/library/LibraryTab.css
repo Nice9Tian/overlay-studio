@@ -184,3 +184,17 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 预设组:指向的 kind 这一版没有 → 灰显(还能选中看说明、能删,不能加) */
+.lib-item.is-missing .lib-item-title,
+.lib-item.is-missing .lib-item-meta {
+  color: var(--ink-faint);
+  text-decoration: line-through;
+}
+.lib-item .fx-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+}

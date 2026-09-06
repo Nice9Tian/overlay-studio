@@ -4,6 +4,7 @@ import { Canvas } from "../components/Canvas";
 import { EFFECTS } from "../effects/registry";
 import { kindColor } from "../effects/kindColor";
 import { listSrtAssets, listVideoAssets, srtDuration } from "./assets";
+import { listPresets } from "../overlay/presets";
 import type { LibrarySelection } from "./LibraryTab";
 import "./HoverPreview.css";
 
@@ -98,6 +99,12 @@ export function HoverPreview({
       const def = EFFECTS.find((e) => e.id === item.id);
       return def ? ({ kind: "effect", def } as const) : null;
     }
+    if (item.type === "preset") {
+      // 预设 = 现有 kind + 调好的 params(AI 或用户另存的);kind 这一版没有就不预览
+      const preset = listPresets().find((p) => p.id === item.id);
+      const def = preset ? EFFECTS.find((e) => e.id === preset.kind) : undefined;
+      return preset && def ? ({ kind: "preset", def, preset } as const) : null;
+    }
     if (item.type === "video") {
       const video = listVideoAssets().find((v) => v.id === item.id);
       return video ? ({ kind: "video", video } as const) : null;
@@ -138,16 +145,21 @@ export function HoverPreview({
 
   let body: ReactNode = null;
 
-  if (data.kind === "effect") {
+  if (data.kind === "effect" || data.kind === "preset") {
     const def = data.def;
+    // 预设:在默认参数上盖预设的 params;标题显示预设名,描述换成「哪张卡的预设」
+    const preset = data.kind === "preset" ? data.preset : null;
+    const baseParams = preset ? { ...def.defaults, ...preset.params } : def.defaults;
     body = (
       <>
         <div className="hp-head">
           <div className="hp-title">
             <i className="hp-dot" style={{ background: kindColor(def.id) }} />
-            {def.name}
+            {preset ? preset.name : def.name}
           </div>
-          <div className="hp-desc">{def.description}</div>
+          <div className="hp-desc">
+            {preset ? preset.description || `${def.name} 的预设 · ${preset.source === "ai" ? "AI 生成" : "手动另存"}` : def.description}
+          </div>
           {def.tags?.length ? (
             <div className="hp-tags">
               {def.tags.map((t) => (
@@ -161,7 +173,7 @@ export function HoverPreview({
         <div className="hp-stage">
           <Canvas
             effect={def}
-            params={{ ...def.defaults, theme: def.defaults.theme ?? theme ?? "dark" }}
+            params={{ ...baseParams, theme: baseParams.theme ?? theme ?? "dark" }}
             playToken={token}
             showGuides={false}
             showPerson
