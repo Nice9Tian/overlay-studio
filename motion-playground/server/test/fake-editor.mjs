@@ -42,7 +42,7 @@ const req = http.request(`http://127.0.0.1:${port}/api/mcp/events`, {
             pReq.write(body);
             pReq.end();
           }
-        } catch (e) {
+        } catch {
           // ignore parsing error
         }
       }

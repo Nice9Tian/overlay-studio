@@ -64,7 +64,7 @@ export async function detectEngine() {
         }
       }
     }
-  } catch (e) {
+  } catch {
   }
 
   const pythons = [
@@ -80,7 +80,7 @@ export async function detectEngine() {
         python: py
       };
       return detectedEngine;
-    } catch (e) {
+    } catch {
     }
   }
 

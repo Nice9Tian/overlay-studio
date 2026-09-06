@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
+import { probeAuth } from './auth.mjs';
 import { getClaudeProvider, startRun as startClaude } from './claude.mjs';
 import { getAgyProvider, startRun as startAgy } from './agy.mjs';
 import { getCodexProvider, startRun as startCodex } from './codex.mjs';
@@ -14,7 +15,7 @@ export function resolveExe(name, fallback) {
       exeCache.set(name, lines[0]);
       return lines[0];
     }
-  } catch (e) {}
+  } catch {}
   exeCache.set(name, fallback);
   return fallback;
 }
@@ -27,11 +28,47 @@ export async function listProviders(opts = {}) {
   if (!opts.refresh && providersCache && now - providersCacheTime < 5000) {
     return providersCache;
   }
-  providersCache = await Promise.all([
+  const baseProviders = await Promise.all([
     getClaudeProvider(),
     getAgyProvider(),
     getCodexProvider()
   ]);
+  
+  await Promise.all(baseProviders.map(async (p) => {
+    p.auth = await probeAuth(p.id, { refresh: !!opts.refresh });
+  }));
+
+  const providers = [...baseProviders];
+
+  try {
+    const mod = await import('./api.mjs');
+    const p = await mod.getApiProvider();
+    providers.push({ label: 'API 直连', ...p, id: 'api' });
+  } catch {
+    providers.push({
+      id: 'api',
+      label: 'API 直连',
+      available: false,
+      note: 'api runner 缺失',
+      auth: { loggedIn: false, detail: 'api runner 还没就绪' }
+    });
+  }
+
+  const apiEntry = providers.find(p => p.id === 'api');
+  if (apiEntry && !apiEntry.auth) {
+    try {
+      const aiConfig = await import('../ai-config.mjs');
+      const cfg = aiConfig.publicConfig();
+      apiEntry.auth = {
+        loggedIn: cfg.api.apiKey.set,
+        detail: cfg.api.apiKey.set ? '' : '还没填 API Key'
+      };
+    } catch {
+      apiEntry.auth = { loggedIn: false, detail: '获取配置失败' };
+    }
+  }
+
+  providersCache = providers;
   providersCacheTime = now;
   return providersCache;
 }
@@ -40,6 +77,43 @@ export function startRun(opts) {
   if (opts.provider === 'claude') return startClaude(opts);
   if (opts.provider === 'agy') return startAgy(opts);
   if (opts.provider === 'codex') return startCodex(opts);
+  if (opts.provider === 'api') {
+    let inner = null;
+    let aborted = false;
+    const done = (async () => {
+      let mod;
+      try {
+        mod = await import('./api.mjs');
+      } catch {
+        try { opts.onEvent({ type: 'error', message: 'API 直连还没就绪:server/runners/api.mjs 缺失或加载失败' }); } catch {}
+        return;
+      }
+      if (aborted) return;
+      try {
+        inner = mod.startRun(opts);
+      } catch (e) {
+        try { opts.onEvent({ type: 'error', message: String(e.message) }); } catch {}
+        return;
+      }
+      if (aborted) {
+        try { inner.abort(); } catch {}
+      }
+      try {
+        await inner.done;
+      } catch (e) {
+        try { opts.onEvent({ type: 'error', message: String(e.message) }); } catch {}
+      }
+    })();
+    return {
+      abort() {
+        aborted = true;
+        if (inner) {
+          try { inner.abort(); } catch {}
+        }
+      },
+      done
+    };
+  }
   throw new Error(`Unknown provider: ${opts.provider}`);
 }
 
@@ -63,7 +137,7 @@ export function truncate(s, maxLength) {
 
 export function spawnCli(exePath, args, opts, onEvent, providerName) {
   const safeOnEvent = (ev) => {
-    try { onEvent(ev); } catch (e) {}
+    try { onEvent(ev); } catch {}
   };
 
   let actualCmd = exePath;
@@ -143,10 +217,10 @@ export function spawnCli(exePath, args, opts, onEvent, providerName) {
     try {
       const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
       killer.on('error', () => {});
-    } catch (e) {}
+    } catch {}
     
     // Fallback if taskkill fails
-    try { child.kill('SIGKILL'); } catch (e) {}
+    try { child.kill('SIGKILL'); } catch {}
 
     abortTimer = setTimeout(() => {
       if (!hasDone) {

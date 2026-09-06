@@ -1,6 +1,6 @@
 # AI CLI 运行器 (Runners)
 
-该模块负责启动和管理与三个主流 AI CLI（Claude Code, Antigravity, Codex）的进程交互。
+该模块负责启动和管理与三个主流 AI CLI（Claude Code, Antigravity, Codex）及内部直连（API）的进程交互。
 
 ## 模块职责与接口
 
@@ -8,27 +8,34 @@
 
 ```typescript
 // 枚举可用的提供商并探测是否安装及版本信息
-export async function listProviders(opts?: { refresh: true }): Promise<Array<{
-  id: "claude" | "agy" | "codex",
+export async function listProviders(opts?: { refresh: boolean }): Promise<Array<{
+  id: "claude" | "agy" | "codex" | "api",
   label: string,
   available: boolean,
   version?: string,
   path?: string,
-  note?: string
+  note?: string,
+  auth?: { loggedIn: boolean | null, detail?: string, fixHint?: string, loginCommand?: string[] }
 }>>
 
 // 启动一次会话，返回包含中止句柄和完成 Promise 的对象
 export function startRun(opts: {
-  provider: "claude" | "agy" | "codex",
+  provider: "claude" | "agy" | "codex" | "api",
   prompt: string,
   systemPrompt: string,
   sessionId?: string,
   cwd: string,
   model?: string,
   mcp: { serverName: "overlay-studio", command: string, args: string[], env: Record<string, string> },
+  callTool: (name: string, args: any) => Promise<any>,
   onEvent: (ev: RunEvent) => void,
 }): { abort(): void, done: Promise<void> }
 ```
+
+- `listProviders(opts)`：`opts.refresh` 为真时跳过 5 秒缓存。返回的每一项多了 `auth` 字段；末尾固定多一项 `id` 为 `api` 的 provider（通过动态 `import('./api.mjs')` 的 `getApiProvider()` 提供；如果文件缺失或加载失败时，回退为 `available: false` 加 `note` 为 "api runner 缺失" 的占位项，**绝不让整个列表崩掉**）。如果 `api` 项自己没带 `auth`，`index.mjs` 会自动回退调用 `../ai-config.mjs` 的 `publicConfig()` 补齐（以 `apiKey` 是否已设置作为 `loggedIn` 状态）。
+- `startRun(opts)`：
+  - **新增了 `callTool(name, args) -> Promise` 参数**：桥把 `/api/mcp/call` 的同套分发机制透传给 runner。三家 CLI runner 会忽略它（它们的工具执行走自己的 MCP 服务进程）；只有 api runner（API 直连 harness）用它直接执行工具。由于 `index.mjs` 的 `startRun` 把整个 `opts` 原样透传，它不会挑选过滤字段。
+  - 对于 `provider` 为 `api`，`startRun` 会走内部异步分支：若动态 `import('./api.mjs')` 失败，它会通过 `onEvent` 发一条 `error` 事件（绝不抛出异常）；若在 import 完成前被调用了 `abort()`，也会安全等待 `inner` 就绪后立刻使其生效。
 
 ### RunEvent 规范
 共 7 种事件类型：
@@ -39,6 +46,20 @@ export function startRun(opts: {
 - `{type:"status", text}`
 - `{type:"done", sessionId?, usage?}`
 - `{type:"error", message}`
+
+---
+
+## auth.mjs · 登录状态探测
+
+该模块提供 `probeAuth(providerId, { refresh })` 用于返回三大 CLI 对应的登录状态。
+- **配置与规则**：带 10 秒默认缓存。每次探测 `timeout` 5000 毫秒、`windowsHide: true`、永不抛错。
+- **红色警戒线**：该模块**不读取、不打印 `~/.codex/config.toml` 的内容**（尊重用户隐私配置）；**绝对不跑任何会把用户登出的命令**。
+- `loginCommandFor(providerId)` 根据提供方回传 `['claude', 'auth', 'login']` 等拉起界面的原生命令。
+
+**三家当前环境探测结论实测：**
+- **Claude**：执行 `claude auth status` 探测。由于退出码是 1 但 `stdout` 仍是有效的 JSON，解析忽略退出码。实测返回 `loggedIn: false`。
+- **Codex**：执行 `codex login status` 探测。本机因 `config.toml` 加载失败（第 5 行的 `model_reasoning_effort` 值本版不认）导致返回 `loggedIn: null` 加提示 `fixHint`。我们不改用户配置。
+- **Agy**：由于没有类似状态命令（且未登录时首次运行会自己打开浏览器），永远返回 `loggedIn: null`。
 
 ---
 
@@ -128,6 +149,12 @@ codex exec resume <threadId> --json --skip-git-repo-check \
 ---
 
 ## 已知限制与使用前提
+
+### POST /api/ai/login 实测现象
+当尝试通过接口请求启动三种不同 CLI 的登录窗时：
+- **Claude**：弹出控制台窗口并运行 `cmd /k claude auth login`。同时 **Chrome 自动弹出了标题为 "Sign in - Claude" 的登录页**。
+- **Codex**：仅弹出控制台窗口运行 `cmd /k codex login`，因配置报错立刻退出，**没有**打开浏览器。此时要求用户根据提示 `fixHint` 先修改 `~/.codex/config.toml`。
+- **Agy**：弹出控制台窗口运行 `cmd /k agy` 进入了交互式会话，**没有**打开浏览器，由于本机这台机器的 agy 已经是登录状态（如未登录时首次运行会自己打开浏览器）。
 
 ### Claude Code
 - **登录状态**: 命令行端 OAuth 过期将无法在无头模式使用（报 `api_error`）。用户需要手动在终端执行 `claude` 重新登录后，本运行器才能正常工作。

@@ -1,9 +1,10 @@
 import type { Plugin } from 'vite';
-import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { ServerResponse } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
 
 function sendJson(res: ServerResponse, code: number, data: any) {
   if (res.headersSent) return;
@@ -22,17 +23,24 @@ export function aiBridge(): Plugin {
     name: 'ai-bridge',
     configureServer(server) {
       server.httpServer?.on('listening', () => {
-        const addr = server.httpServer?.address();
-        if (addr && typeof addr !== 'string') {
-          const port = addr.port;
-          const tmpDir = path.join(os.tmpdir(), 'overlay-studio');
-          fs.mkdirSync(tmpDir, { recursive: true });
-          fs.writeFileSync(path.join(tmpDir, 'port.json'), JSON.stringify({
-            port,
-            pid: process.pid,
-            startedAt: Date.now()
-          }));
-        }
+        try {
+          const addr = server.httpServer?.address();
+          if (addr && typeof addr !== 'string') {
+            const port = addr.port;
+            let host = addr.address;
+            if (host === '::' || host === '0.0.0.0') {
+              host = '127.0.0.1';
+            }
+            const tmpDir = path.join(os.tmpdir(), 'overlay-studio');
+            fs.mkdirSync(tmpDir, { recursive: true });
+            fs.writeFileSync(path.join(tmpDir, 'port.json'), JSON.stringify({
+              port,
+              host,
+              pid: process.pid,
+              startedAt: Date.now()
+            }));
+          }
+        } catch {}
       });
 
       async function getRunner() {
@@ -50,16 +58,175 @@ export function aiBridge(): Plugin {
         }
       }
 
+      async function callToolInternal(tool: string, args: any): Promise<any> {
+        const { tools } = await import(new URL('./mcp-tools.mjs', import.meta.url).href);
+        const toolDef = tools.find((t: any) => t.name === tool);
+        
+        if (!toolDef) {
+          const err = new Error('Unknown tool');
+          (err as any).code = 'UNKNOWN_TOOL';
+          throw err;
+        }
+
+        if (toolDef.side === 'server' || toolDef.side === 'hybrid') {
+          if (tool === 'transcribe_video') {
+            const { transcribe } = await import(new URL('./stt.mjs', import.meta.url).href);
+            const file = args.path || (args.url ? path.join(server.config.root, 'public', decodeURIComponent(args.url.split('?')[0])) : '');
+            return await transcribe(file, args.language);
+          } else if (tool === 'probe_media') {
+            const { probeDuration } = await import(new URL('./stt.mjs', import.meta.url).href);
+            const file = args.path || (args.url ? path.join(server.config.root, 'public', decodeURIComponent(args.url.split('?')[0])) : '');
+            const stat = fs.statSync(file);
+            const durationSec = await probeDuration(file);
+            return { durationSec, sizeBytes: stat.size, path: file, url: args.url };
+          } else if (tool === 'get_card_authoring_guide') {
+            try {
+              const markdown = fs.readFileSync(new URL('./card-authoring-guide.md', import.meta.url), 'utf-8');
+              return { markdown };
+            } catch {
+              throw new Error('指南缺失');
+            }
+          } else if (tool === 'import_video') {
+            let file = args.path;
+            let url = args.url;
+            if (!file && !url) throw new Error('Missing path or url');
+            
+            const destDir = path.join(server.config.root, 'public', '_media');
+            if (file) {
+              if (!file.startsWith(destDir)) {
+                const ext = path.extname(file);
+                const base = path.basename(file, ext);
+                const safe = base.replace(/[^\w.\-\u4e00-\u9fff]/g, '_').slice(-80);
+                const destFile = path.join(destDir, `${safe}-${Date.now()}${ext}`);
+                fs.mkdirSync(destDir, { recursive: true });
+                fs.copyFileSync(file, destFile);
+                url = `/_media/${encodeURIComponent(path.basename(destFile))}`;
+              } else {
+                 url = `/_media/${encodeURIComponent(path.basename(file))}`;
+              }
+            }
+            
+            if (!editorRes) throw new Error('编辑台没有打开:没有页面连着 /api/mcp/events');
+            
+            const id = nextCallId++;
+            const p = new Promise<any>(resolve => {
+              pendingCalls.set(id, resolve);
+              setTimeout(() => {
+                if (pendingCalls.has(id)) {
+                  pendingCalls.delete(id);
+                  resolve({ ok: false, error: 'Timeout' });
+                }
+              }, 60000);
+            });
+            
+            editorRes.write(`data: ${JSON.stringify({ type: 'call', id, tool: 'register_video', args: { url, name: args.name, setAs: args.set_as } })}\n\n`);
+            const out = await p;
+            if (out.ok) return out.result || out;
+            throw new Error(out.error);
+          }
+        }
+
+        if (!editorRes) {
+          throw new Error('编辑台没有打开:没有页面连着 /api/mcp/events');
+        }
+
+        const id = nextCallId++;
+        const p = new Promise<any>(resolve => {
+          pendingCalls.set(id, resolve);
+          setTimeout(() => {
+            if (pendingCalls.has(id)) {
+              pendingCalls.delete(id);
+              resolve({ ok: false, error: 'Timeout' });
+            }
+          }, 60000);
+        });
+
+        editorRes.write(`data: ${JSON.stringify({ type: 'call', id, tool, args })}\n\n`);
+        
+        const out = await p;
+        if (out.ok) return out.result || out;
+        throw new Error(out.error);
+      }
+
       server.middlewares.use('/api/ai/providers', async (req, res) => {
         if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: 'GET only' });
         try {
+          const urlStr = req.originalUrl || req.url || '';
+          const refresh = /[?&]refresh=1(&|$)/.test(urlStr);
           const runners = await getRunner();
-          const list = await runners.listProviders();
-          const { detectEngine } = await import(new URL('./stt.mjs', import.meta.url).href);
-          const stt = await detectEngine();
+          const list = await runners.listProviders({ refresh });
+          
+          let stt = { engine: null as string | null, available: false, hint: '' };
+          try {
+            const { detectEngine } = await import(new URL('./stt.mjs', import.meta.url).href);
+            stt = await detectEngine();
+          } catch (e: any) {
+            stt.hint = `语音识别引擎探测失败:${e.message}`;
+          }
           sendJson(res, 200, { ok: true, providers: list, stt });
         } catch (e: any) {
           sendJson(res, 503, { ok: false, error: String(e) });
+        }
+      });
+
+      server.middlewares.use('/api/ai/login', async (req, res) => {
+        if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' });
+        let body = '';
+        req.on('data', c => body += c);
+        req.on('end', async () => {
+          try {
+            const { provider } = JSON.parse(body);
+            const { loginCommandFor } = await import(new URL('./runners/auth.mjs', import.meta.url).href);
+            const loginCommand = loginCommandFor(provider);
+            if (!loginCommand) {
+              return sendJson(res, 400, { ok: false, error: '这个 provider 没有登录命令' });
+            }
+            const runners = await getRunner();
+            const list = await runners.listProviders();
+            const entry = list.find((p: any) => p.id === provider);
+            if (!entry || !entry.available) {
+              return sendJson(res, 400, { ok: false, error: '该 CLI 没装' });
+            }
+
+            try {
+              spawn('cmd.exe', ['/c', 'start', 'Overlay Studio 登录', 'cmd', '/k', ...loginCommand], {
+                detached: true,
+                stdio: 'ignore',
+                windowsHide: false
+              }).unref();
+            } catch (e: any) {
+              return sendJson(res, 500, { ok: false, error: String(e) });
+            }
+
+            sendJson(res, 200, { ok: true, hint: '已打开登录窗口,完成后回到这里会自动刷新' });
+          } catch (e: any) {
+            sendJson(res, 400, { ok: false, error: String(e) });
+          }
+        });
+      });
+
+      server.middlewares.use('/api/ai/config', async (req, res) => {
+        try {
+          const { publicConfig, writeConfig } = await import(new URL('./ai-config.mjs', import.meta.url).href);
+          if (req.method === 'GET') {
+            return sendJson(res, 200, { ok: true, config: publicConfig() });
+          } else if (req.method === 'POST') {
+            let body = '';
+            req.on('data', c => body += c);
+            req.on('end', () => {
+              try {
+                const partial = JSON.parse(body);
+                writeConfig(partial);
+                sendJson(res, 200, { ok: true, config: publicConfig() });
+              } catch (e: any) {
+                sendJson(res, 400, { ok: false, error: e.message });
+              }
+            });
+          } else {
+            sendJson(res, 405, { ok: false, error: 'GET or POST only' });
+          }
+        } catch (e: any) {
+          sendJson(res, 500, { ok: false, error: String(e) });
         }
       });
 
@@ -77,7 +244,7 @@ export function aiBridge(): Plugin {
             let systemPrompt = '';
             try {
               systemPrompt = fs.readFileSync(new URL('./ai-system-prompt.md', import.meta.url), 'utf-8');
-            } catch (e) {
+            } catch {
               systemPrompt = 'System prompt missing.';
             }
 
@@ -133,6 +300,7 @@ export function aiBridge(): Plugin {
               cwd,
               model,
               mcp,
+              callTool: async (name: string, args: any) => await callToolInternal(name, args),
               onEvent: (ev: any) => {
                 if (ev.type === 'done') hasDone = true;
                 res.write(`data: ${JSON.stringify(ev)}\n\n`);
@@ -246,107 +414,14 @@ export function aiBridge(): Plugin {
         req.on('end', async () => {
           try {
             const { tool, args } = JSON.parse(body);
-            const { tools } = await import(new URL('./mcp-tools.mjs', import.meta.url).href);
-            const toolDef = tools.find((t: any) => t.name === tool);
-            
-            if (!toolDef) {
-              return sendJson(res, 404, { ok: false, error: 'Unknown tool' });
-            }
-
-            if (toolDef.side === 'server' || toolDef.side === 'hybrid') {
-              if (tool === 'transcribe_video') {
-                const { transcribe } = await import(new URL('./stt.mjs', import.meta.url).href);
-                const file = args.path || (args.url ? path.join(server.config.root, 'public', decodeURIComponent(args.url.split('?')[0])) : '');
-                try {
-                  const result = await transcribe(file, args.language);
-                  sendJson(res, 200, { ok: true, result });
-                } catch (e: any) {
-                  sendJson(res, 200, { ok: false, error: String(e.message) });
-                }
-                return;
-              } else if (tool === 'probe_media') {
-                const { probeDuration } = await import(new URL('./stt.mjs', import.meta.url).href);
-                const file = args.path || (args.url ? path.join(server.config.root, 'public', decodeURIComponent(args.url.split('?')[0])) : '');
-                try {
-                  const stat = fs.statSync(file);
-                  const durationSec = await probeDuration(file);
-                  sendJson(res, 200, { ok: true, result: { durationSec, sizeBytes: stat.size, path: file, url: args.url }});
-                } catch (e: any) {
-                  sendJson(res, 200, { ok: false, error: String(e.message) });
-                }
-                return;
-              } else if (tool === 'get_card_authoring_guide') {
-                try {
-                  const markdown = fs.readFileSync(new URL('./card-authoring-guide.md', import.meta.url), 'utf-8');
-                  sendJson(res, 200, { ok: true, result: { markdown } });
-                } catch (e) {
-                  sendJson(res, 200, { ok: false, error: '指南缺失' });
-                }
-                return;
-              } else if (tool === 'import_video') {
-                let file = args.path;
-                let url = args.url;
-                if (!file && !url) return sendJson(res, 200, { ok: false, error: 'Missing path or url' });
-                
-                const destDir = path.join(server.config.root, 'public', '_media');
-                if (file) {
-                  if (!file.startsWith(destDir)) {
-                    const ext = path.extname(file);
-                    const base = path.basename(file, ext);
-                    const safe = base.replace(/[^\w.\-\u4e00-\u9fff]/g, '_').slice(-80);
-                    const destFile = path.join(destDir, `${safe}-${Date.now()}${ext}`);
-                    fs.mkdirSync(destDir, { recursive: true });
-                    fs.copyFileSync(file, destFile);
-                    url = `/_media/${encodeURIComponent(path.basename(destFile))}`;
-                  } else {
-                     url = `/_media/${encodeURIComponent(path.basename(file))}`;
-                  }
-                }
-                
-                if (!editorRes) return sendJson(res, 200, { ok: false, error: '编辑台没有打开:没有页面连着 /api/mcp/events' });
-                
-                const id = nextCallId++;
-                const p = new Promise(resolve => {
-                  pendingCalls.set(id, resolve);
-                  setTimeout(() => {
-                    if (pendingCalls.has(id)) {
-                      pendingCalls.delete(id);
-                      resolve({ ok: false, error: 'Timeout' });
-                    }
-                  }, 60000);
-                });
-                
-                editorRes.write(`data: ${JSON.stringify({ type: 'call', id, tool: 'register_video', args: { url, name: args.name, setAs: args.set_as } })}\n\n`);
-                const out: any = await p;
-                return sendJson(res, 200, out);
-              }
-            }
-
-            if (!editorRes) {
-              return sendJson(res, 200, { ok: false, error: '编辑台没有打开:没有页面连着 /api/mcp/events' });
-            }
-
-            const id = nextCallId++;
-            const p = new Promise(resolve => {
-              pendingCalls.set(id, resolve);
-              // Server tools timeout is 30 mins (transcribe_video is server, handled above)
-              // This branch is for browser side tools, timeout 60 seconds
-              const isTranscribe = tool === 'transcribe_video'; // (never hit here, just to be sure)
-              const timeout = isTranscribe ? 1800000 : 60000;
-              setTimeout(() => {
-                if (pendingCalls.has(id)) {
-                  pendingCalls.delete(id);
-                  resolve({ ok: false, error: 'Timeout' });
-                }
-              }, timeout);
-            });
-
-            editorRes.write(`data: ${JSON.stringify({ type: 'call', id, tool, args })}\n\n`);
-            
-            const out: any = await p;
-            sendJson(res, 200, out);
+            const result = await callToolInternal(tool, args);
+            sendJson(res, 200, { ok: true, result });
           } catch (e: any) {
-            sendJson(res, 400, { ok: false, error: String(e) });
+            if (e.code === 'UNKNOWN_TOOL') {
+              sendJson(res, 404, { ok: false, error: e.message });
+            } else {
+              sendJson(res, 200, { ok: false, error: e.message });
+            }
           }
         });
       });

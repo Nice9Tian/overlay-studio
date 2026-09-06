@@ -12,6 +12,7 @@ export function startRun(opts) {
   let onEvent = opts.onEvent;
   
   let abortResolve = null;
+  // eslint-disable-next-line no-async-promise-executor -- 假 runner 用 await 排事件顺序,测试用
   const donePromise = new Promise(async (resolve) => {
     abortResolve = resolve;
     

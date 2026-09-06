@@ -24,7 +24,7 @@ async function ensureMcpRegistered(exePath, mcpOpts, safeOnEvent) {
          lastRegisteredPort = mcpOpts.env.OVERLAY_STUDIO_PORT;
          return;
       }
-    } catch (e) {}
+    } catch {}
 
     try {
       execFileSync(exePath, ['mcp', 'add', '-e', `OVERLAY_STUDIO_PORT=${mcpOpts.env.OVERLAY_STUDIO_PORT}`, 'overlay-studio', mcpOpts.command, mcpOpts.args[0]], { windowsHide: true, stdio: 'ignore' });
@@ -78,7 +78,7 @@ export function startRun(opts) {
   const safeOnEvent = (ev) => {
       if (childController) childController.safeOnEvent(ev);
       else {
-          try { opts.onEvent(ev); } catch (e) {}
+          try { opts.onEvent(ev); } catch {}
       }
   };
 
@@ -151,7 +151,7 @@ export function startRun(opts) {
            }
            childController.finish({ type: 'done', sessionId: res.conversation_id, usage: res.usage });
         }
-      } catch (e) {}
+      } catch {}
     }));
 
     childController.donePromise.then(resolveDone);

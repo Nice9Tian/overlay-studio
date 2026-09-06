@@ -1,5 +1,9 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
+// AI 助手:/api/ai/*(聊天,拉起 claude / agy / codex 或 API 直连)+ /api/mcp/*(MCP 桥,AI 读写编辑台)。
+// 纯 Node 内置模块,模块顶层不抛错(桌面壳的 sidecar 就是用这份配置起 Vite 的,插件加载失败 = 桌面版起不来)。
+// 契约与说明见 AI-ASSISTANT-DESIGN.md、server/README.md
+import { aiBridge } from './server/ai-bridge'
 import { spawn } from 'node:child_process'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import fs from 'node:fs'
@@ -300,7 +304,7 @@ function reviewLog(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), overlayExport(), demoUpload(), reviewLog()],
+  plugins: [react(), overlayExport(), demoUpload(), reviewLog(), aiBridge()],
   server: {
     port: 5177, // Overlay Studio 固定端口,避免和其他项目的 5173/5174 混淆
     // 端口被占时**报错退出**,不许自己顺延到 5178。

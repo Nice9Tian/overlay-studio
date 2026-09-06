@@ -115,14 +115,14 @@ export function startRun(opts) {
              safeOnEvent({ type: 'error', message: msg });
          }
       }
-    } catch (e) {}
+    } catch {}
   }));
 
   child.stdin.on('error', () => {});
   try {
       child.stdin.write(fullPrompt);
       child.stdin.end();
-  } catch (e) {}
+  } catch {}
 
   return { abort, done: donePromise };
 }

@@ -4,20 +4,88 @@ import * as path from 'node:path';
 import * as readline from 'node:readline';
 import { tools } from './mcp-tools.mjs';
 
-function getPort() {
+function getTargets() {
+  let port = 5177;
+  let lockHost = null;
   if (process.env.OVERLAY_STUDIO_PORT) {
-    return parseInt(process.env.OVERLAY_STUDIO_PORT, 10);
+    port = parseInt(process.env.OVERLAY_STUDIO_PORT, 10);
   }
   try {
     const p = path.join(os.tmpdir(), 'overlay-studio', 'port.json');
     if (fs.existsSync(p)) {
       const data = JSON.parse(fs.readFileSync(p, 'utf8'));
-      return data.port || 5177;
+      if (!process.env.OVERLAY_STUDIO_PORT && data.port) port = data.port;
+      if (data.host) lockHost = data.host;
     }
-  } catch (e) {
+  } catch {
     // ignore
   }
-  return 5177;
+
+  const hostsSet = new Set();
+  
+  if (lockHost) {
+    let host = lockHost;
+    if (host === '::' || host === '0.0.0.0') {
+      host = '127.0.0.1';
+    } else if (host.includes(':') && !host.startsWith('[')) {
+      host = `[${host}]`;
+    }
+    hostsSet.add(host);
+  }
+  
+  hostsSet.add('127.0.0.1');
+  hostsSet.add('[::1]');
+  hostsSet.add('localhost');
+  
+  return { port, hosts: Array.from(hostsSet) };
+}
+
+let lastBridgeHost = null;
+
+function isConnRefused(err) {
+  let found = false;
+  function walk(e, depth) {
+    if (found || depth > 5 || !e || typeof e !== 'object') return;
+    if (e.code === 'ECONNREFUSED') {
+      found = true;
+      return;
+    }
+    if (e.cause) walk(e.cause, depth + 1);
+    if (Array.isArray(e.errors)) {
+      for (const child of e.errors) {
+        walk(child, depth + 1);
+      }
+    }
+  }
+  walk(err, 0);
+  return found;
+}
+
+async function callBridge(tool, args) {
+  const { port, hosts } = getTargets();
+  for (const host of hosts) {
+    try {
+      const res = await fetch(`http://${host}:${port}/api/mcp/call`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool, args })
+      });
+      if (lastBridgeHost !== host) {
+        process.stderr.write(`[mcp-server] bridge at ${host}:${port}\n`);
+        lastBridgeHost = host;
+      }
+      return res;
+    } catch (err) {
+      if (isConnRefused(err)) {
+        continue;
+      }
+      throw err;
+    }
+  }
+  const e = new Error('All hosts refused connection');
+  e.allRefused = true;
+  e.port = port;
+  throw e;
 }
 
 function sendResponse(id, result) {
@@ -32,7 +100,7 @@ async function handleMessage(line) {
   let req;
   try {
     req = JSON.parse(line);
-  } catch (e) {
+  } catch {
     return; // ignore invalid json
   }
   
@@ -70,20 +138,23 @@ async function handleMessage(line) {
   if (req.method === 'tools/call') {
     const tool = req.params.name;
     const args = req.params.arguments || {};
-    const port = getPort();
     
     let res;
     try {
-      res = await fetch(`http://127.0.0.1:${port}/api/mcp/call`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tool, args })
-      });
+      res = await callBridge(tool, args);
     } catch (e) {
-      sendResponse(req.id, {
-        content: [{ type: "text", text: "Overlay Studio 没在运行(端口 " + port + " 没有服务)" }],
-        isError: true
-      });
+      if (e.allRefused || isConnRefused(e)) {
+        const p = e.port || getTargets().port;
+        sendResponse(req.id, {
+          content: [{ type: "text", text: "Overlay Studio 没在运行(端口 " + p + " 没有服务)" }],
+          isError: true
+        });
+      } else {
+        sendResponse(req.id, {
+          content: [{ type: "text", text: e.message }],
+          isError: true
+        });
+      }
       return;
     }
       

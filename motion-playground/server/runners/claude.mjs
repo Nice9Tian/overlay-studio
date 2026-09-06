@@ -102,14 +102,14 @@ export function startRun(opts) {
              finish({ type: 'done', sessionId: ev.session_id, usage });
          }
       }
-    } catch (e) {}
+    } catch {}
   }));
 
   child.stdin.on('error', () => { /* ignore EPIPE */ });
   try {
       child.stdin.write(opts.prompt);
       child.stdin.end();
-  } catch (e) {
+  } catch {
       // ignore
   }
 

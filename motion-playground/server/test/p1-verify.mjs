@@ -47,7 +47,7 @@ async function waitForBridge() {
     try {
       const res = await fetch('http://127.0.0.1:5196/api/mcp/status');
       if (res.ok) return;
-    } catch (e) {}
+    } catch {}
     await new Promise(r => setTimeout(r, 500));
   }
   throw new Error('Bridge did not start in time');
@@ -64,7 +64,7 @@ async function testChatAndAbort() {
   let buffer = '';
   
   let gotRun = false, gotText = false, gotDone = false;
-  let activeRunId = null;
+  let _activeRunId = null;
   
   while (true) {
     const { done, value } = await reader.read();
@@ -77,7 +77,7 @@ async function testChatAndAbort() {
     for (const part of parts) {
       if (part.startsWith('data: ')) {
         const ev = JSON.parse(part.slice(6));
-        if (ev.type === 'run') { gotRun = true; activeRunId = ev.runId; }
+        if (ev.type === 'run') { gotRun = true; _activeRunId = ev.runId; }
         if (ev.type === 'text') gotText = true;
         if (ev.type === 'done') gotDone = true;
       }
@@ -95,7 +95,7 @@ async function testChatAndAbort() {
   const reader2 = res2.body.getReader();
   let runId2 = null;
   while (true) {
-    const { done, value } = await reader2.read();
+    const { done: _done, value } = await reader2.read();
     buffer += decoder.decode(value, { stream: true });
     let parts = buffer.split('\n\n');
     buffer = parts.pop();
