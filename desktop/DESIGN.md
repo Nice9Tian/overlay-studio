@@ -78,6 +78,10 @@ desktop/
 4. 不改 UI、不改端口、不改 `open: true`(靠 BROWSER=none 关)。
 5. 没有环境变量时行为和改动前**完全一致**(命令行用户零感知)。
 6. `motion-playground/package.json` 需要 allowScripts 块放行 esbuild 和 puppeteer 的安装脚本,否则 npm ci 时 npm 会拦安装脚本、esbuild 的 postinstall 不跑、esbuild.exe 不落地,而且 npm ci 仍然返回 0,故障要到运行时才暴露。
+7. `src/effects/useAnimation.ts` 的 `useEnter`:导出模式下进场翻转改按导出时钟(`useExportMs`)决定,不再走两层 rAF。
+   这是作者留下的逐帧不确定 bug 的根因:两层 rAF 落在本帧还是下一帧取决于虚拟时间推进期间实际跑掉几次 rAF,
+   16 张卡的进场过渡整段错一帧,同一份编排导两次约百帧不同(2026-09-06 实测,原版脚本)。作者已经给 useCountUp /
+   useElapsed / useProgress 做过同样的改法,漏了 useEnter。预览路径(exMs 为 null)一字不变。这是第四个要跟上游合并的文件。
 
 ## Rust 行为(任务 B,`desktop/src-tauri/`)
 
@@ -232,7 +236,7 @@ Node ≥ 22 的 ESM 脚本,幂等,`npm run prepare-runtime` 调用。步骤:
    另记 `c_start` = 从 `puppeteer.launch` 到 `__startExport` 调用完成的秒数(主页面实测)。
 4. **规划**:剩余 `R = total − K`。对 N = 1..max 求分段长度 L_0..L_{N-1}(整数,和为 R)使各工作器同时完成:
    `T_0 = L_0·c_frame`(主页面接着渲染,不重启);`T_i = c_start + (s_i − 1)·c_ff + L_i·c_frame`,`s_i = K + 1 + Σ_{j<i} L_j`。
-   用二分找 T 使 Σ L_i = R;`wall(N) = T`。取 wall 最小的 N;只有 `wall(N) < 0.85·wall(N−1)` 才允许多开一个;任一 `L_i < 30` 则这个 N 作废。
+   用二分找 T 使 Σ L_i = R;`wall(N) = T`。取 wall 最小的 N;**auto 模式下**只有 `wall(N) < 0.85·wall(N−1)` 才允许多开一个(用户显式指定 workers=N 时照给,不做这个门槛);任一 `L_i < 30` 则这个 N 作废。
    把每个 N 的预测秒数打成一张表写进日志,最后一行写选定的 N 和分段。
 5. **执行**:主页面继续渲染 `K+1 .. K+L_0`;工作器 i(1..N−1)各自 `puppeteer.launch`(同一套 LAUNCH_OPTS 和页面准备 —— 把页面准备抽成 `openRenderPage()` 供主页面和工作器共用),快进到 `s_i` 后渲染 `L_i` 帧,直接写 `outDir/frame_%06d.png`(全局帧号)。`Promise.all` 并发。
 

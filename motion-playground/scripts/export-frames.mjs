@@ -563,8 +563,20 @@ async function openRenderPage({ isMain = false } = {}) {
       );
     });
 
-  // 自定义字体加载完再开闸,避免前几帧渲染成回退字体
-  await page.evaluate(() => document.fonts.ready).catch(() => {});
+  // 字体全部加载完再开闸,避免前几帧渲染成回退字体。
+  // 只等 document.fonts.ready 不够:它只等「正在加载」的字体,而 @font-face 声明的字体
+  // (自托管的 IBM Plex 各字重、用户丢进去的字体)要等到页面第一次真用到那个字重才开始下载,
+  // 那时导出已经开跑,字体在真实时间里加载完的那一帧起画面就换字形 —— 落在第几帧看机器快慢,
+  // 同一份编排两次导出不一样(2026-09-06 实测:服务器模式复跑 82 帧不同,静态模式 1 帧;
+  // 并行时主页面在等工作器启动的那一秒多里字体恰好加载完,分段起点后一小段整片不同)。
+  // 这里把声明过的每一张字体都主动 load() 完,再 fonts.ready,时钟冻结前字形就定死了。
+  await page
+    .evaluate(async () => {
+      const faces = Array.from(document.fonts);
+      await Promise.all(faces.map((f) => f.load().catch(() => null)));
+      await document.fonts.ready;
+    })
+    .catch(() => {});
 
   // 冻结时钟 → 开闸 → 从 t=0 逐帧推进
   await client.send("Emulation.setVirtualTimePolicy", { policy: "pause" });

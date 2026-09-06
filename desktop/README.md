@@ -61,13 +61,14 @@ npm run dev
 上游更新后，为了保证壳正常运行，请务必注意以下几点：
 
 1. **必须重跑组装脚本**：`runtime/app` 只是复制品，上游改完必须重跑 `npm run prepare-runtime`，否则壳里跑的永远是旧代码。
-2. **重新合入被修改的三处代码**：本项目对上游修改过三个文件，上游更新后要记得把改动合上去：
+2. **重新合入被修改的四处代码**：本项目对上游修改过四个文件，上游更新后要记得把改动合上去：
    - `motion-playground/package.json`：末尾有一段 `allowScripts`，放行 `esbuild` 和 `puppeteer` 的安装脚本。**漏合后果**：新版 npm 会拦安装脚本但 `npm ci` 仍返回 0，esbuild.exe 不落地，壳里的 Vite 到运行时才报错。
    - `motion-playground/vite.config.ts`：`overlayExport` 插件里 `spawn('node', ...)` 要改成 `spawn(process.execPath, ...)`；`reviewLog` 插件写 `exports/review-logs` 的路径要改成优先读环境变量 `OVERLAY_EXPORT_DIR`。**漏合后果**：sidecar 里 spawn 裸 node 会找不到（包里没装 Node）。
    - `motion-playground/scripts/export-frames.mjs`：增加 `EXPORT_ROOT`（有 `OVERLAY_EXPORT_DIR` 就用它，否则还是原版的 `ROOT/exports`），所有的 `outDir`、`finalDir` 以及磁盘空间预检（`freeBytes(EXPORT_ROOT)`）都要基于它。**漏合后果**：导出文件会写进安装目录，卸载时成品会被一起删掉。
      同一个文件的 puppeteer 启动参数里还多了一行 `--window-position=-32000,-32000`。**漏合后果**：导出时桌面左上角会挂着一个 780×580 的空黑窗口（Chrome 新无头模式在 Windows 11 上的已知问题），导完才消失。
      这个文件还有两块较大的改动要一并合入：**静态模式**（`staticDir` / `OVERLAY_EXPORT_STATIC_DIR`，用请求拦截把 `overlay.local` 映射到 `dist` 和 `public` 上的文件，并用 `pipe: true` 让 CDP 走管道）和**并行导出**（`workers` / `OVERLAY_EXPORT_WORKERS`，多开浏览器分段渲染，`auto` 时自动缩放）。**漏合后果**：桌面版的导出退回到需要 5177 端口、且单进程串行 —— 导出期间和编辑台抢 Vite，多核机器上慢好几倍。
-3. **兼容性说明**：这三处改动在没有环境变量时行为和原版完全一致，命令行用户零感知。
+   - `motion-playground/src/effects/useAnimation.ts`：`useEnter` 在导出模式下改按导出时钟决定进场（照同文件 `useCountUp` 的做法）。**漏合后果**：同一份编排每次导出都有约百帧随机差一帧，逐帧比对永远过不了；这是上游原有的 bug，预览不受影响。
+3. **兼容性说明**：这四处改动在没有环境变量、不在导出模式时行为和原版完全一致，命令行用户零感知。
 4. **不要动静态目录**：`public/_fxframes`、`public/sfx` 这些路径不要动，dev server 要 serve 它们。
 
 ## 给最终用户：首次运行

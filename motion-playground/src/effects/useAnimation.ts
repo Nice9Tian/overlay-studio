@@ -200,5 +200,13 @@ export function useEnter(playToken: number): boolean {
       if (inner) cancelAnimationFrame(inner);
     };
   }, [playToken]);
+  // 导出时不信 rAF,按导出时钟定进场(和上面 useCountUp 等三个钩子走 useExportMs 是同一个道理)。
+  // 两层 rAF 落在本帧还是下一帧,取决于虚拟时间推进那 33ms 里实际跑掉几次 rAF —— 每次导出都不同。
+  // 翻转差一帧,这张卡后面整段进场过渡就整体错一帧;16 张卡都走这个钩子,同一份编排导两次
+  // 约有百帧不同(2026-09-06 实测,原版脚本、同一台机器)。渲染期直接读时钟就没有这个窗口:
+  // 挂载那一帧算未进场(保住「先 false 再 true」的次序,过渡才会触发),之后一律已进场。
+  // 预览时 exMs 为 null,走原来的 rAF 路径,行为不变。
+  const exMs = useExportMs(playToken, 1);
+  if (exMs !== null) return exMs > 0;
   return entered;
 }
