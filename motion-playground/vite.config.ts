@@ -156,7 +156,8 @@ function overlayExport(): Plugin {
             const jobFile = path.join(os.tmpdir(), `overlay-export-${Date.now()}.json`)
             fs.writeFileSync(jobFile, JSON.stringify(job))
 
-            const child = spawn('node', ['scripts/export-frames.mjs', jobFile], {
+            // 用 process.execPath 而不是字面量 node: 桌面端打的包不依赖系统 PATH 里的 node
+            const child = spawn(process.execPath, ['scripts/export-frames.mjs', jobFile], {
               cwd: server.config.root,
               stdio: ['ignore', 'pipe', 'pipe'],
             })
@@ -277,7 +278,10 @@ function reviewLog(): Plugin {
         req.on('end', () => {
           try {
             JSON.parse(body) // 只校验是合法 JSON,原样落盘
-            const dir = path.join(server.config.root, 'exports', 'review-logs')
+            // 桌面版把产物统一放 OVERLAY_EXPORT_DIR, 评审日志跟着走; 没设时保持老路径, 命令行用户零感知
+            const dir = process.env.OVERLAY_EXPORT_DIR
+              ? path.join(path.resolve(process.env.OVERLAY_EXPORT_DIR), 'review-logs')
+              : path.join(server.config.root, 'exports', 'review-logs')
             fs.mkdirSync(dir, { recursive: true })
             const stamp = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-')
             const dest = path.join(dir, `${stamp}-review-log.json`)
