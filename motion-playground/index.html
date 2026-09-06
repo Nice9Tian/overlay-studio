@@ -5,13 +5,15 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Overlay Studio</title>
-    <!-- A1 瑞士编辑部:IBM Plex 字族(离线时自动退回系统字体) -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+SC:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
+    <!-- A1 瑞士编辑部:IBM Plex Mono(400/500/600),**自托管**,不联网。
+         以前这里是 Google Fonts 的三行 <link>。改成本地的原因是导出有两条路:
+         联网的服务器模式真会把字体下下来用上,而静态模式(scripts/export-frames.mjs 的 F 节,
+         桌面壳断网也要能导)会 abort 掉所有外部请求 —— 同一份编排在两种模式下于是
+         渲染出不同字形,mono 字重的文字整段对不上。字体落到本地,两边拿到同一份。
+         中文用系统字体回退(--font-sans 里的 "IBM Plex Sans SC" 在 Google Fonts 上
+         本来就不存在,单独请求返回 400,一直都是回退,这次没有变化)。
+         woff2 与 CSS 的生成方式见 public/fonts/README.md。 -->
+    <link rel="stylesheet" href="/fonts/ibm-plex.css" />
   </head>
   <body>
     <div id="root"></div>
