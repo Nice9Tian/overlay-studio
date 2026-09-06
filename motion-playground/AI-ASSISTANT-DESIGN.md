@@ -315,3 +315,171 @@ tsc(自己文件)/ lint 干净;`npm run check:cards` 通过(或报告里说清�
 **未开始**:P5 全部(§7);LibraryTab「预设」组(§6.4);main.tsx 路由。fork2 也因 token 告停,`src/library/*`、App.tsx、Sidebar.tsx、TopBar.tsx、main.tsx 仍是它的半成品,**它发「改完」之前都不能动**。
 
 **恢复顺序建议**:① 用户重登 `claude` CLI → 跑 `node server/test/runner-smoke.mjs claude`;② 修 `::1` 问题后跑 `node server/test/mcp-smoke.mjs`;③ 对 P3/P4 文件跑 tsc/lint/单测并按契约走读一遍;④ 等 fork2 交还后做 P5。入库前把本文件里的本机绝对路径(`%USERPROFILE%\…`)洗成占位。
+
+---
+
+# 第八轮(2026-09-06):登录 / 首启选择 / API 直连 harness
+
+用户原话:「除了要对接 CLI(没登陆的话要弹出等于网页让用户登录)。在软件首次启动的时候检测有哪些 CLI,让用户选择(弹出窗口)。还要使用一套内置 harness,允许用户使用 API 来直接驱动 AI。我暂时选型为 https://github.com/anthropics/claude-quickstarts。但是要注意改造这套 harness 来支持其它厂商 LLM 的接入。(听说 str_replace_editor 需要适配。)」
+
+主 Agent 的选型判断(已告知用户):claude-quickstarts 的 `agents/` 是 **Python**(`agent.py` 的 Agent 类 + `tools/base.py` 的 Tool 基类 + `utils/` 的消息历史与 MCP 连接),而本软件的后端是 Node(Vite 中间件,桌面壳 sidecar 也是 Node,没有打包 Python)。所以**照它的结构用 Node 重写一份**放在 `server/harness/`,不引入 Python 运行时,也不加 npm 依赖(Node 22 自带 fetch)。「str_replace_editor 需要适配」的原因:它在 Anthropic API 里是服务端预定义的内置工具类型(`text_editor_*`),别家模型不认识 —— 改成一个带完整 JSON Schema 的普通 function 工具就通用了(§14.4)。
+
+## 11. 第八轮边界与归属
+
+- 第七轮的边界(§0)继续有效:不碰 fork2 名下的 `src/App.tsx`、`Sidebar.tsx`、`TopBar.tsx`、`main.tsx`、`src/library/**`;不碰 `vite.config.ts`、`scripts/**`、`desktop/**`、`legacy/**`;不加依赖;不跑 git;失败安全;windowsHide;端口只用 5196。
+- 第七轮 P1–P4 的文件现在都归主 Agent,本轮按下面重新分配。**同一文件只有一个写者**:
+
+| 任务 | 文件 |
+|---|---|
+| Q1 登录探测 + 配置存储 + 桥接改动 | `server/runners/auth.mjs`(新)、`server/ai-config.mjs`(新)、`server/runners/index.mjs`(改)、`server/ai-bridge.ts`(改)、`server/mcp-server.mjs`(改:双栈回退)、`server/vite.ai.config.ts`(改:host)、`server/README.md`、`server/runners/README.md`、`server/test/auth-smoke.mjs`(新)、`server/test/mcp-smoke.mjs`(改) |
+| Q2 API 直连 harness | `server/harness/**`(新)、`server/runners/api.mjs`(新)、`server/test/harness-smoke.mjs`(新)、`server/harness/README.md` |
+| Q3 首启选择弹窗 + 登录引导 + 面板改动 | `src/components/AiSetupDialog.tsx/.css`(新)、`src/components/AiPanel.tsx/.css`(改)、`src/ai/useAiChat.ts`、`src/ai/types.ts`、`src/ai/AiDevHarness.tsx`(改)、`src/ai/__tests__/**` |
+| P5 主 Agent | 等 fork2「改完」后:`vite.config.ts` 一行、`main.tsx` 路由、App/Sidebar/ParamsPanel/App.css 接线、`LibraryTab.tsx` 预设组 |
+
+- Q1 和 Q2 的接缝只有两处,写死在这里:① `server/runners/api.mjs` 导出 `getApiProvider()` 和 `startRun(opts)`(和其他 runner 同形,§4.1),Q1 在 `index.mjs` 里 import 并接进 `listProviders / startRun`(文件不存在时 `listProviders` 仍要能工作:动态 import 失败就回一条 `available:false, note:"api runner 缺失"`);② 桥在 `startRun(opts)` 里**新增** `opts.callTool(name, args) → Promise<result>`(把工具名和入参交给桥现有的 `/api/mcp/call` 同一套分发:服务端工具本地做、浏览器工具转编辑台等结果;抛错 = 工具失败),CLI runner 忽略它,api runner 靠它执行工具。Q2 开发期间用 `server/test/harness-smoke.mjs` 里的假 `callTool` 顶上。
+- Q1 和 Q3 的接缝是 §12 / §13 的 HTTP 形状。
+
+## 12. 登录探测与登录引导(Q1 服务端,Q3 前端)
+
+### 12.1 `server/runners/auth.mjs`
+
+`export async function probeAuth(providerId, { refresh } = {}): Promise<{ loggedIn: boolean | null; detail?: string; fixHint?: string; loginCommand?: string[] }>`,结果缓存 10 秒(`refresh` 跳过缓存)。
+
+- **claude**:`claude auth status` 实测输出 JSON `{"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty"}` → 直接取 `loggedIn`;`loginCommand: ["claude", "auth", "login"]`(会自己打开浏览器)。
+- **codex**:`codex login status`;按 stdout / exit code 判「Logged in / Not logged in」。**本机实测它先在加载 `~/.codex/config.toml` 时就报错**:`unknown variant 'ultra', expected one of none|minimal|low|medium|high|xhigh`(第 5 行的 `model_reasoning_effort`)—— 这种情况返回 `loggedIn: null`,`detail` = 报错原文那一行,`fixHint` = 「codex 配置文件 ~/.codex/config.toml 第 N 行的 model_reasoning_effort 值本版 codex 不认,改成 high 或 xhigh 后再试」。**不许替用户改配置文件,也不许读出或打印它的其他内容**。`loginCommand: ["codex", "login"]`。
+- **agy**:没有登录子命令(`agy --help` 里没有 login/auth)。manager 要查清它的登录机制(`agy help`、`agy install --help`、`~/.gemini/antigravity-cli/` 目录下有没有凭据类文件名——只看文件名,不读内容;**不许把用户登出来测**),查不到就 `loggedIn: null`,`detail: "agy 没有登录状态命令;未登录时首次运行会自己打开浏览器"`,`loginCommand: ["agy"]`。
+- 任何探测命令都 `timeout: 5000`、`windowsHide: true`、失败不抛(返回 `loggedIn: null` + detail)。
+
+### 12.2 桥的改动(`server/ai-bridge.ts`)
+
+- `GET /api/ai/providers[?refresh=1]`:每个 provider 多一个 `auth` 字段(= probeAuth 结果);`api` provider 见 §13.3。
+- `POST /api/ai/login` 体 `{ provider }` → 用**可见的**控制台窗口起登录命令(用户要在浏览器里完成 OAuth,窗口给他看进度):`spawn("cmd.exe", ["/c", "start", "Overlay Studio 登录", "cmd", "/k", ...loginCommand], { detached: true, stdio: "ignore", windowsHide: false }).unref()`(`start` 后第一个参数是窗口标题;manager 实测三家的登录命令确实会弹浏览器,或至少弹出可交互的控制台)。回 `{ ok: true, hint: "已打开登录窗口,完成后回到这里会自动刷新" }`;provider 不认识 / 没装 → 400。
+- `GET /api/ai/config` / `POST /api/ai/config`:见 §13.2。
+- `startRun` 传 `callTool`(§11)。
+- 顺手修:两处 `catch (e)` 未用变量的 lint 警告;锁文件 `%TEMP%\overlay-studio\port.json` 多写 `host`(实际监听地址,取 `server.httpServer.address()`)。
+- **`server/mcp-server.mjs` 双栈回退**(第七轮 P1 发现的真 bug:Vite 默认绑 `localhost` 在这台机器上只有 `::1`,而 mcp-server 打 `127.0.0.1` 永远连不上):打 `/api/mcp/call` 时先用锁文件里的 `host`(没有就 `127.0.0.1`),`ECONNREFUSED` 再依次试 `[::1]`、`localhost`;`server/vite.ai.config.ts` 加 `server.host: "127.0.0.1"`(桌面壳本来就用 127.0.0.1 访问)。`server/test/mcp-smoke.mjs` 在 5196 起真桥且 fake-editor 连上时要真的通过 editor-up 那组用例,不能再 SKIPPED。
+
+### 12.3 前端(Q3)
+
+- `useAiChat` 增加:`providers[i].auth`;`login(provider)` → `POST /api/ai/login`,然后每 3 秒 `GET /api/ai/providers?refresh=1` 最多 180 秒,`auth.loggedIn` 变 true 就停并提示「已登录」;`config` / `saveConfig(partial)`(§13.2);`setupOpen / openSetup / closeSetup`。
+- `AiPanel`:头部加 ⚙(打开 `AiSetupDialog`);当前 provider `auth.loggedIn === false` 时消息区顶部出一条横幅「<label> 还没登录 → 〔去登录〕」(点了变「登录窗口已打开,等你完成…」并轮询);`loggedIn === null` 且有 `fixHint` 时横幅显示 fixHint(如 codex 配置错误);发送时 provider 未登录就先弹横幅不发。
+- **首启弹窗** `AiSetupDialog`(§15)。
+
+## 13. 配置存储与「API 直连」provider
+
+### 13.1 `server/ai-config.mjs`(Q1)
+
+路径 `%LOCALAPPDATA%\overlay-studio\ai.json`(环境变量 `OVERLAY_AI_CONFIG` 可覆盖,测试用);不存在 = 默认值。形状:
+
+```json
+{ "version": 1,
+  "defaultProvider": "claude" | "agy" | "codex" | "api" | null,
+  "api": { "vendor": "anthropic" | "openai" | "gemini", "baseUrl": "", "apiKey": "", "model": "", "maxTokens": 4096 } }
+```
+`readConfig()` / `writeConfig(partial)`(深合并;`apiKey` 传 `""` 或缺省 = 保持原值,传 `null` = 清空)/ `publicConfig()`(`apiKey` 换成 `{ set: boolean, last4: string }`)。**任何日志、错误信息、事件里都不许出现 apiKey 原文**。
+
+### 13.2 端点(Q1)
+
+`GET /api/ai/config` → `publicConfig()`;`POST /api/ai/config` 体 = partial → 写入后回 `publicConfig()`。`vendor` 只认三个值,`baseUrl` 必须是 http(s) 或空,`defaultProvider` 只认四个值或 null。
+
+### 13.3 `api` provider(Q1 在 `index.mjs` 接入,Q2 实现)
+
+`listProviders()` 多一项:`{ id: "api", label: "API 直连", available: apiKey 已设置, version: "<vendor>/<model>", auth: { loggedIn: apiKey 已设置, detail: 没设置时 "还没填 API Key" }, note }`。`startRun({ provider: "api", … })` → `server/runners/api.mjs`。前端 `AiProvider` 类型加 `"api"`。
+
+## 14. `server/harness/`(Q2)—— 照 claude-quickstarts/agents 的结构用 Node 重写,多厂商
+
+### 14.1 结构
+
+```
+server/harness/
+  agent.mjs          Agent 类:构造 { provider, system, tools, maxIterations = 24, onEvent, signal },async run(userText, history) → { text, history }
+  history.mjs        MessageHistory:数组 + 按估算 token(字符数 / 3)截断(保留 system 与最近若干轮;截断时 onEvent 发 status)
+  providers/
+    base.mjs         接口:createProvider(cfg, { fetchImpl = globalThis.fetch } = {}) → { name, async *stream(messages, tools, system, signal) }(产出统一事件,见 14.2)
+    anthropic.mjs    Messages API(POST {baseUrl|https://api.anthropic.com}/v1/messages,headers anthropic-version: 2023-06-01 + x-api-key,stream: true)
+    openai.mjs       Chat Completions(POST {baseUrl|https://api.openai.com}/v1/chat/completions,stream: true,tools 用 function 形状)—— 任何 OpenAI 兼容端点(DeepSeek / Qwen / Moonshot / 各类中转)都走这一份,靠 baseUrl 区分
+    gemini.mjs       generateContent(POST {baseUrl|https://generativelanguage.googleapis.com}/v1beta/models/{model}:streamGenerateContent?alt=sse,header x-goog-api-key,tools 用 functionDeclarations,systemInstruction)
+    mock.mjs         测试用:按脚本先发一次 tool_use 再发正文
+  tools/
+    index.mjs        buildTools({ callTool, workspaceDir }) → Tool[]:15 个 mcp-tools(schema 直接 import ../../mcp-tools.mjs,execute = callTool)+ think + text_editor
+    think.mjs        think(thought) → "ok"(quickstart 里的 ThinkTool)
+    textEditor.mjs   见 14.4
+  schema.mjs         JSON Schema 清洗(Gemini 不认 $schema / additionalProperties / 某些 format;OpenAI 不开 strict)
+  README.md
+```
+
+### 14.2 内部消息形状与事件
+
+- 内部统一用 Anthropic 的消息形状做中间表示:`{ role: "user"|"assistant", content: [ {type:"text", text} | {type:"tool_use", id, name, input} | {type:"tool_result", tool_use_id, content, is_error} ] }`;三个 provider 各自负责和自家格式互转(OpenAI:assistant.tool_calls ↔ tool_use,`{role:"tool", tool_call_id, content}` ↔ tool_result;Gemini:`functionCall` / `functionResponse` parts,role `model`)。
+- provider 的 `stream()` 产出:`{ type:"text_delta", text }`、`{ type:"tool_use", id, name, input }`(入参拼完整后一次给)、`{ type:"usage", input, output }`、`{ type:"stop", reason }`;HTTP 非 2xx 抛 `Error("<vendor> HTTP 401: <响应体 message 字段前 300 字>")`,**响应体里若含 key 也不得回显**(只截 message 字段)。
+- Agent 循环:发请求 → 收 text_delta 就 `onEvent({type:"text", delta})` → 收到 tool_use 就 `onEvent({type:"tool_call"})`、并行执行(`Promise.all`)、`onEvent({type:"tool_result"})`、追加 tool_result 消息 → 再发,直到一轮没有 tool_use 或到 maxIterations(到顶发 status「已达工具调用上限」)。`signal`(AbortController)贯穿 fetch 和循环。
+
+### 14.3 `server/runners/api.mjs`
+
+`getApiProvider()`(读 ai-config;见 §13.3);`startRun(opts)`:`sessionId` 是 harness 自己的会话 id(`api-<随机>`),历史存 `%TEMP%\overlay-studio\harness-sessions\<id>.json`(续聊读回来);`opts.systemPrompt` 作 system;工具 = `buildTools({ callTool: opts.callTool, workspaceDir: opts.cwd })`;RunEvent 和其他 runner 一致(session → text/tool_call/tool_result/status → done|error);`abort()` 触发 AbortController。**apiKey 只在进程内存里从 ai-config 读**,不进事件、不进日志、不进历史文件。
+
+### 14.4 `text_editor`(str_replace_editor 的通用化)
+
+Anthropic 的内置文本编辑器(`type: "text_editor_20250124", name: "str_replace_editor"`)是服务端定义的 schema,别家模型不认识;这里改成普通 function 工具:
+
+```json
+{ "name": "text_editor", "description": "查看/新建/修改工作目录里的文本文件(只限 exports/ai-workspace/)",
+  "input_schema": { "type": "object", "properties": {
+    "command": { "type": "string", "enum": ["view", "create", "str_replace", "insert", "undo_edit"] },
+    "path": { "type": "string", "description": "相对 exports/ai-workspace/ 的路径" },
+    "file_text": { "type": "string" }, "old_str": { "type": "string" }, "new_str": { "type": "string" },
+    "insert_line": { "type": "integer" }, "view_range": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 }
+  }, "required": ["command", "path"] } }
+```
+语义照 Anthropic 文档:view 带行号(目录则列文件)、create 不覆盖已有文件、str_replace 要求 old_str 唯一命中、insert 在第 N 行后插入、undo_edit 撤销上一次(每个文件一条撤销栈)。路径 `resolve` 后必须在工作目录内,否则报错。README 里写清「为什么要适配」。
+
+### 14.5 Q2 验收
+
+`node --check` 全过;`node server/test/harness-smoke.mjs`:用 `mock.mjs` provider + 假 `callTool`(返回固定 get_editor_state)跑一轮,拿到 session / tool_call(get_editor_state)/ tool_result / text / done;text_editor 单测(create → view → str_replace → insert → undo_edit,以及越界路径被拒);三个真 provider 的请求体构造用 dry-run 测:通过 `fetchImpl` 注入假 fetch,断言 URL / header **名**(不打印值)/ body 形状,并喂一段手写的 SSE 文本验证解析(anthropic 的 content_block_start/delta/stop + message_stop;openai 的 choices[].delta.tool_calls 分片拼装;gemini 的 candidates[].content.parts.functionCall)。**不许在任何地方写入真实 API Key**;本机没有配置文件,所以不跑真实网络调用。
+
+## 15. 首启弹窗 `AiSetupDialog`(Q3)
+
+```ts
+export function AiSetupDialog(props: {
+  open: boolean; onClose: () => void;
+  providers: ProviderInfo[];            // 含 auth
+  stt?: SttInfo;
+  current: AiProvider | null; onChoose: (id: AiProvider) => void;
+  onLogin: (id: AiProvider) => Promise<void>;
+  loginState: Partial<Record<AiProvider, "idle" | "waiting" | "ok" | "timeout">>;
+  config: PublicAiConfig | null; onSaveConfig: (partial: AiConfigPatch) => Promise<void>;
+}): JSX.Element | null;
+```
+- 样式照 `src/components/ConfirmDialog.tsx/.css` 的浮层做(遮罩 + 居中卡片,Esc 关闭,`role="dialog"`),类前缀 `ais-`。
+- 内容:标题「选择 AI 助手的驱动方式」;三行 CLI(Claude Code / Antigravity / Codex):安装状态(版本号或「未安装」)、登录状态(✓ 已登录 / 「未登录 → 〔登录〕」/ 灰字 detail + fixHint)、单选;第四行「API 直连」:vendor `<select>`(Anthropic / OpenAI 兼容 / Gemini)、baseUrl(可空,placeholder 写默认地址)、model(text,按 vendor 给 placeholder)、apiKey(`type="password"`,已保存时显示「已保存 ••••<last4>」和「更换」按钮;永不回显)、〔保存〕;底部〔使用所选方案〕(未登录 / 没 key 时按钮禁用并说明原因)。
+- 首启逻辑(在 `useAiChat` 里):`localStorage.aiSetupDone` 不存在且 providers 已加载 → `setupOpen = true`;选定后写 `aiSetupDone = "1"`、`aiProvider = id`,并 `POST /api/ai/config { defaultProvider }`。之后从 ⚙ 再开。
+- `AiDevHarness` 里也能打开弹窗;`mock=1` 时 providers / auth / config 用假数据。
+- 单测:把 `src/ai/__tests__/liteMarkdown.test.tsx` 修好 —— 失败原因是 `npx tsx` 没读到 `tsconfig.app.json` 的 `jsx: react-jsx`,报 `React is not defined`;用 `npx tsx --tsconfig tsconfig.app.json <文件>` 跑,并把这条命令写进测试文件头部注释(第七轮契约说的 `npx tsx` 都按这个补齐)。
+
+## 16. 第八轮验收(P5 时统一做)
+
+- tsc 0(除 fork2 半成品)、lint 无新增。
+- 5196 起 `server/vite.ai.config.ts`:首次打开(清掉 `aiSetupDone`)弹出选择窗;三家 CLI 状态与本机一致(claude 未登录、codex 配置错误 + fixHint、agy 按实测);点「登录」Claude Code → 弹出控制台 + 浏览器登录页(**由用户自己完成登录,主 Agent 不代做**);「API 直连」填一个假 key 保存 → 列表显示「已保存 ••••xxxx」,GET /api/ai/config 不回显原文。
+- `node server/test/harness-smoke.mjs` 通过;`node server/test/mcp-smoke.mjs` 在桥开着时 editor-up 组通过(双栈修好)。
+- agy 已登录的话:选 Antigravity 发「时间轴上有什么」能走通(第七轮 P2 已验证 runner)。
+
+---
+
+## 17. 状态(2026-09-06 10:20,第七 + 第八轮收尾;§10 的快照已过时,以本节为准)
+
+**全部接线完成,验收通过**:
+- `npx tsc -p tsconfig.app.json --noEmit` 0 错误;`npm run lint` 只剩仓库原有的 fast-refresh 类警告,server/ 与 src/ai 零警告。
+- 单测:`npx tsx --tsconfig tsconfig.app.json` 跑 sse / liteMarkdown / presets / customCardSanitize 全过。
+- 冒烟:`node server/test/harness-smoke.mjs`(12 例)、`node server/test/auth-smoke.mjs`、`node server/test/mcp-smoke.mjs`(自起 5196 真桥,editor-up 组通过)全部 ALL PASS。
+- 端到端(5195 上 `?aidev=1` 开发页,真桥 + 假编辑台):首启弹窗 → 选 Antigravity → 发「调用 get_editor_state 后用一句话告诉我时间轴上有几张卡」→ agy 走 MCP 拿到编辑台状态,回答「共有 2 张卡片,轨道 1 的 punch-pill(1~5 秒)和轨道 2 的 term-card(2~6 秒)」。测试期间临时加的 agy 允许规则 `mcp(overlay-studio/get_editor_state)` 已删;agy 全局 MCP 注册 `overlay-studio → server/mcp-server.mjs` 是 runner 自动做的,**保留**(这是产品行为)。
+- `vite.config.ts` 已注册 `aiBridge()`(工程目标分析会话放行);`server/vite.ai.config.ts` 只改端口 / host / open。
+
+**接线明细(P5)**:App.tsx 右栏 `<AiPanel mcpConnected>`,左栏 `<Sidebar bottom={<ParamsPanel embedded …/>}>`,EditorApi 实现在 App.tsx(建卡 / 改卡带占用检查,冲突 throw 原文给 AI);Sidebar 加 `bottom` 插槽 + 可拖分隔条(localStorage `sideBottomH`);ParamsPanel 加 `embedded`;App.css 加 `.side-split / .side-bottom / .pp-embedded`;LibraryTab 加「预设」组(`LibrarySelection` 多 `preset`,`onAddPreset`),HoverPreview 加 preset 分支;main.tsx 加 `?aidev=1`。
+
+**用户环境里要自己处理的**(代码不替用户改):
+1. 本机 `claude` CLI 未登录(`claude auth status` → loggedIn:false):面板里点「登录」会弹控制台 + 浏览器登录页,自己完成。Q1 测试时弹过一次,Chrome 里可能还留着一个「Sign in - Claude」标签页。
+2. `~/.codex/config.toml` 第 5 行 `model_reasoning_effort = "ultra"` 本版 codex 不认(只认 none|minimal|low|medium|high|xhigh),面板横幅会提示;第三方 provider 还回 403「账号已迁移」。
+3. agy 无头调 MCP 工具要逐个工具加允许规则 `mcp(overlay-studio/<工具名>)`(15 条,见 server/runners/README.md);没加时 runner 把 agy 的拒绝原文转给用户。以后可以做一个「一键授权」按钮写这 15 条。
+4. 语音识别引擎没装(见 §9.1);agy 能直接看视频出 SRT(P2 实测,2–4 秒一条)。
+
+**未做 / 留给下一轮**:预设拖到时间轴(拖放协议只带 kind);AI 直接写 TSX 组件;api provider 的真实网络调用没测过(本机没有任何 key);harness 的 usage 是最后一轮的值不是累加;`AiPanel` 的 hooks-order 报错只在 HMR 中出现过,整页刷新后没有复现,若再见到请记下复现步骤。

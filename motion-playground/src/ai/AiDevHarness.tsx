@@ -22,6 +22,7 @@ export function AiDevHarness() {
   const [presets, setPresets] = useState(() => listPresets());
   const [srtLines, setSrtLines] = useState<SrtLine[]>([]);
   const [srtName, setSrtName] = useState<string>("");
+  const [openSetupSignal, setOpenSetupSignal] = useState(0);
 
   useEffect(() => {
     return subscribePresets(() => setPresets(listPresets()));
@@ -88,10 +89,12 @@ export function AiDevHarness() {
       <div style={{ flex: 1, padding: 20, overflow: "auto", color: "var(--ink)" }}>
         <h2>假编辑台 (Mock Editor)</h2>
         <div style={{ marginBottom: 20 }}>
+          {isMock && <div style={{ color: "var(--ink-muted)", fontSize: 12, marginBottom: 8 }}>带 mock=1 参数时用假数据,三家 CLI 状态各不相同,API 直连未配置。</div>}
           <strong>MCP Status: </strong>
           <span style={{ color: mcpStatus.connected ? "var(--accent)" : "var(--danger)" }}>
             {mcpStatus.connected ? "Connected" : "Disconnected"}
           </span>
+          <button style={{ marginLeft: 12, padding: "4px 8px", background: "var(--fill-subtle)", color: "var(--ink)", border: "1px solid var(--hairline)", borderRadius: 4, cursor: "pointer" }} onClick={() => setOpenSetupSignal(s => s + 1)}>打开 AI 设置</button>
         </div>
         
         <h3>Cards on Timeline</h3>
@@ -147,7 +150,7 @@ export function AiDevHarness() {
       </div>
       
       <div style={{ width: 340, borderLeft: "1px solid var(--hairline)", backgroundColor: "var(--bg-panel)" }}>
-        <AiPanel mcpConnected={mcpStatus.connected} mock={isMock} />
+        <AiPanel mcpConnected={mcpStatus.connected} mock={isMock} openSetupSignal={openSetupSignal} />
       </div>
     </div>
   );

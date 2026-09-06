@@ -1,4 +1,11 @@
-export type AiProvider = "claude" | "agy" | "codex";
+export type AiProvider = "claude" | "agy" | "codex" | "api";
+
+export interface AuthInfo {
+  loggedIn: boolean | null;
+  detail?: string;
+  fixHint?: string;
+  loginCommand?: string[];
+}
 
 export interface ProviderInfo {
   id: AiProvider;
@@ -7,6 +14,34 @@ export interface ProviderInfo {
   version?: string;
   path?: string;
   note?: string;
+  auth?: AuthInfo;
+}
+
+export type ApiVendor = "anthropic" | "openai" | "gemini";
+
+export type LoginState = "idle" | "waiting" | "ok" | "timeout";
+
+export interface PublicAiConfig {
+  version: number;
+  defaultProvider: AiProvider | null;
+  api: {
+    vendor: ApiVendor;
+    baseUrl: string;
+    model: string;
+    maxTokens: number;
+    apiKey: { set: boolean; last4: string };
+  };
+}
+
+export interface AiConfigPatch {
+  defaultProvider?: AiProvider | null;
+  api?: {
+    vendor?: ApiVendor;
+    baseUrl?: string;
+    model?: string;
+    maxTokens?: number;
+    apiKey?: string | null;
+  };
 }
 
 export interface SttInfo {

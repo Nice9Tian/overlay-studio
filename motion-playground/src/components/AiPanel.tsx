@@ -4,17 +4,25 @@ import { useAiChat } from "../ai/useAiChat";
 import { renderLiteMarkdown } from "../ai/liteMarkdown";
 import { importVideoFile, importSrtFile } from "../library/assets";
 import type { ChatAttachment } from "../ai/types";
+import { AiSetupDialog } from "./AiSetupDialog";
 
-export function AiPanel(props: { mcpConnected: boolean; hotkeysOff?: boolean; mock?: boolean }) {
-  const { messages, providers, provider, setProvider, streaming, send, abort, newChat, error, setMessages } = useAiChat({ mock: props.mock });
+export function AiPanel(props: { mcpConnected: boolean; hotkeysOff?: boolean; mock?: boolean; openSetupSignal?: number }) {
+  const { messages, providers, sttInfo, provider, setProvider, streaming, send, abort, newChat, error, setMessages, login, loginState, config, saveConfig, setupOpen, openSetup, closeSetup } = useAiChat({ mock: props.mock });
   const [inputText, setInputText] = useState("");
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [showLoginPrompt, setShowLoginPrompt] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (props.openSetupSignal && props.openSetupSignal > 0) {
+      openSetup();
+    }
+  }, [props.openSetupSignal, openSetup]);
 
   useEffect(() => {
     const el = messagesScrollRef.current;
@@ -40,6 +48,12 @@ export function AiPanel(props: { mcpConnected: boolean; hotkeysOff?: boolean; mo
   }, [toast]);
 
   const handleSend = () => {
+    const pInfo = providers.find(p => p.id === provider);
+    if (pInfo && pInfo.auth?.loggedIn === false) {
+      setShowLoginPrompt(true);
+      return;
+    }
+    setShowLoginPrompt(false);
     if (!inputText.trim() && attachments.length === 0) return;
     send(inputText.trim(), attachments);
     setInputText("");
@@ -131,10 +145,23 @@ export function AiPanel(props: { mcpConnected: boolean; hotkeysOff?: boolean; mo
       <aside className="panel panel-right ai-panel">
         <div className="ai-panel-header">
           <div className="ai-panel-title">AI 助手</div>
+          <button className="ai-gear-btn" title="AI 设置" aria-label="AI 设置" onClick={openSetup}>⚙</button>
         </div>
         <div className="ai-empty-state">
           没找到 Claude Code / agy / Codex,装好任意一个后重启本地服务
         </div>
+        <AiSetupDialog
+          open={setupOpen}
+          onClose={() => closeSetup()}
+          providers={providers}
+          stt={sttInfo || undefined}
+          current={provider}
+          onChoose={(id) => closeSetup(id)}
+          onLogin={login}
+          loginState={loginState}
+          config={config}
+          onSaveConfig={saveConfig}
+        />
       </aside>
     );
   }
@@ -150,6 +177,7 @@ export function AiPanel(props: { mcpConnected: boolean; hotkeysOff?: boolean; mo
           />
         </div>
         <div className="ai-panel-controls">
+          <button className="ai-gear-btn" title="AI 设置" aria-label="AI 设置" onClick={openSetup}>⚙</button>
           <select 
             className="ai-provider-select"
             value={provider || ""}
@@ -157,13 +185,41 @@ export function AiPanel(props: { mcpConnected: boolean; hotkeysOff?: boolean; mo
           >
             {providers.map(p => (
               <option key={p.id} value={p.id} disabled={!p.available} title={p.available ? "" : "未安装"}>
-                {p.id === "claude" ? "Claude Code" : p.id === "agy" ? "Antigravity" : p.id === "codex" ? "Codex" : p.label}
+                {p.label || (p.id === "claude" ? "Claude Code" : p.id === "agy" ? "Antigravity" : p.id === "codex" ? "Codex" : p.id)}
               </option>
             ))}
           </select>
           <button className="ai-new-chat-btn" onClick={newChat}>新对话</button>
         </div>
       </div>
+
+      {(() => {
+        const pInfo = providers.find(p => p.id === provider);
+        if (!pInfo) return null;
+        if (pInfo.auth?.loggedIn === false) {
+          const st = provider ? loginState[provider] : undefined;
+          return (
+            <div className="ai-banner">
+              <span>{showLoginPrompt ? "请先登录再发送" : `${pInfo.label} 还没登录`}</span>
+              <button 
+                className="ai-banner-btn" 
+                onClick={() => { if(provider) login(provider); setShowLoginPrompt(false); }}
+                disabled={st === "waiting"}
+              >
+                {st === "waiting" ? "登录窗口已打开,等你完成…" : st === "timeout" ? "登录超时,可以再试一次" : "去登录"}
+              </button>
+            </div>
+          );
+        }
+        if (pInfo.auth?.loggedIn === null && pInfo.auth.fixHint) {
+          return (
+            <div className="ai-banner">
+              {pInfo.auth.fixHint}
+            </div>
+          );
+        }
+        return null;
+      })()}
 
       <div className="ai-messages" ref={messagesScrollRef}>
         {messages.length === 0 ? (
@@ -268,6 +324,19 @@ export function AiPanel(props: { mcpConnected: boolean; hotkeysOff?: boolean; mo
           </button>
         </div>
       </div>
+      
+      <AiSetupDialog
+        open={setupOpen}
+        onClose={() => closeSetup()}
+        providers={providers}
+        stt={sttInfo || undefined}
+        current={provider}
+        onChoose={(id) => closeSetup(id)}
+        onLogin={login}
+        loginState={loginState}
+        config={config}
+        onSaveConfig={saveConfig}
+      />
     </aside>
   );
 }

@@ -3,15 +3,17 @@ import { EFFECTS } from "./effects/registry";
 import { Sidebar } from "./components/Sidebar";
 import { Canvas } from "./components/Canvas";
 import { ParamsPanel } from "./components/ParamsPanel";
+import { AiPanel } from "./components/AiPanel";
+import { connectMcpExecutor, type EditorApi } from "./ai/mcpExecutor";
 import { TimelineBar } from "./components/TimelineBar";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { StageControls } from "./components/StageControls";
 import { TopBar, FORMS, PALETTES, LEGACY_SKIN_MAP } from "./components/TopBar";
 import type { LibrarySelection } from "./library/LibraryTab";
 import { HoverPreview } from "./library/HoverPreview";
-import { addSrtAsset } from "./library/assets";
+import { addSrtAsset, addVideoAsset, listSrtAssets, listVideoAssets, srtDuration } from "./library/assets";
 import { parseOverlay, trackOf, type OverlayCard, type OverlayDoc } from "./overlay/types";
-import { trackLabel } from "./overlay/cardLabel";
+import { trackLabel, effectName, cardSummary } from "./overlay/cardLabel";
 import { parseSrt, type SrtLine } from "./overlay/srt";
 import { lintOverlay, mergeLintConfig, type LintConfig, type LintIssue } from "./overlay/lint";
 import { uploadErrText } from "./uploadErr";
@@ -74,6 +76,8 @@ export default function App() {
   });
   // 当前在用的字幕稿的名字(素材库据此标「使用中」),随自动存档
   const [srtName, setSrtName] = useState<string | undefined>(undefined);
+  // AI 助手:这个页面有没有连上后台的 MCP 桥(/api/mcp/events)。右栏小圆点用
+  const [mcpConnected, setMcpConnected] = useState(false);
   const [showGuides, setShowGuides] = useState(true);
   const [showPerson, setShowPerson] = useState(true);
   // 导入的本地视频(object URL):编辑台=停在首帧等播放;效果库=静音循环当背景
@@ -1367,6 +1371,145 @@ export default function App() {
   // 参数面板:改选中的卡。查不到(编排里有本档没有的卡)就照实传 undefined,由 ParamsPanel 说清楚是哪张
   const panelEffect = selCard ? EFFECTS.find((e) => e.id === selCard.kind) : undefined;
 
+  // ---- AI 助手 ↔ 编辑台(契约 AI-ASSISTANT-DESIGN.md §5.3 的 EditorApi) ----
+  // AI 通过 MCP 调的工具最终落到这里。对象每次渲染重建、存进 ref:执行器用 getApi() 拿到的
+  // 永远是最新一次渲染的闭包(overlay / curT 都是新的),订阅本身只挂一次。
+  // 建卡 / 改卡都先做占用检查,冲突就 throw —— 错误原文会原样回给 AI,让它换时段或换序列。
+  const trackNamesNow = overlay?.trackNames;
+  const clashOn = (track: number, start: number, end: number, exceptId?: string) =>
+    (overlay?.cards ?? []).find(
+      (c) => c.id !== exceptId && trackOf(c) === track && c.start < end && c.end > start,
+    );
+  const clashText = (track: number, c: OverlayCard) =>
+    `${trackLabel(track, trackNamesNow)} 在 ${c.start}–${c.end} 秒已被 ${c.id}(${effectName(c.kind)})占用,换个时段或换条序列`;
+  const aiApi: EditorApi = {
+    getState: () => ({
+      curT,
+      duration,
+      playing,
+      videoUrl: videoUrl ?? undefined,
+      srtName,
+      trackCount,
+      trackNames: trackNamesNow,
+      cards: (overlay?.cards ?? []).map((c) => ({
+        id: c.id,
+        kind: c.kind,
+        name: effectName(c.kind),
+        start: c.start,
+        end: c.end,
+        track: trackOf(c),
+        summary: cardSummary(c),
+      })),
+      videoAssets: listVideoAssets().map((v) => ({ id: v.id, name: v.name, src: v.src, durationSec: v.durationSec })),
+      srtAssets: listSrtAssets().map((a) => ({
+        id: a.id,
+        name: a.name,
+        lines: a.lines.length,
+        duration: srtDuration(a.lines),
+      })),
+    }),
+    getCard: (id) => overlay?.cards.find((c) => c.id === id),
+    addCard: ({ kind, start, end, track, params }) => {
+      const def = EFFECTS.find((e) => e.id === kind);
+      if (!def) throw new Error(`没有这种卡:${kind}(先用 list_effects 看有哪些 kind)`);
+      const t = Math.max(1, Math.floor(track ?? activeTrack));
+      const s = Math.max(0, start);
+      // end 不传:默认时长,但顶到同序列下一张卡为止
+      let gapEnd = Infinity;
+      for (const c of overlay?.cards ?? []) {
+        if (trackOf(c) === t && c.start > s) gapEnd = Math.min(gapEnd, c.start);
+      }
+      const e = end ?? Math.min(s + addSecFor(kind), gapEnd);
+      if (e <= s) throw new Error(`end(${e})必须大于 start(${s})`);
+      const clash = clashOn(t, s, e);
+      if (clash) throw new Error(clashText(t, clash));
+      const cards = overlay?.cards ?? [];
+      let n = cards.length + 1;
+      while (cards.some((c) => c.id === `card-${n}`)) n++;
+      const card: OverlayCard = {
+        id: `card-${n}`,
+        kind,
+        start: s,
+        end: e,
+        track: t > 1 ? t : undefined,
+        params: { ...def.defaults, ...(params ?? {}) },
+      };
+      pushHistory(true);
+      setOverlay((o) => {
+        if (!o) return { version: 1 as const, cards: [card], tracks: t > 1 ? t : undefined };
+        const cur = Math.max(o.tracks ?? 1, o.cards.length ? Math.max(...o.cards.map(trackOf)) : 1);
+        return {
+          ...o,
+          cards: [...o.cards, card].sort((a, b) => a.start - b.start),
+          tracks: t > 1 ? Math.max(cur, t) : o.tracks,
+        };
+      });
+      setSelCardId(card.id);
+      setActiveTrack(t);
+      return { id: card.id, start: s, end: e, track: t };
+    },
+    updateCard: ({ id, start, end, track, params }) => {
+      const c = overlay?.cards.find((x) => x.id === id);
+      if (!c) throw new Error(`没有这张卡:${id}(用 get_editor_state 看现有的 id)`);
+      const ns = start ?? c.start;
+      const ne = end ?? c.end;
+      if (ne <= ns) throw new Error(`end(${ne})必须大于 start(${ns})`);
+      const nt = track !== undefined ? Math.max(1, Math.floor(track)) : trackOf(c);
+      const clash = clashOn(nt, ns, ne, id);
+      if (clash) throw new Error(clashText(nt, clash));
+      pushHistory(true);
+      setOverlay((o) =>
+        o
+          ? {
+              ...o,
+              cards: o.cards
+                .map((x) =>
+                  x.id === id
+                    ? {
+                        ...x,
+                        start: ns,
+                        end: ne,
+                        track: nt > 1 ? nt : undefined,
+                        params: params ? { ...x.params, ...params } : x.params,
+                      }
+                    : x,
+                )
+                .sort((a, b) => a.start - b.start),
+              tracks: nt > 1 ? Math.max(o.tracks ?? 1, nt) : o.tracks,
+            }
+          : o,
+      );
+    },
+    removeCard: (id) => {
+      if (!overlay?.cards.some((c) => c.id === id)) throw new Error(`没有这张卡:${id}`);
+      handleDeleteCard(id);
+    },
+    importSrt: (name, lines, use) => {
+      if (!lines.length) throw new Error("字幕里一句都没有(检查 srt_text 的时间行格式 00:00:01,000 --> 00:00:03,000)");
+      const asset = addSrtAsset({ name, lines });
+      if (use) applySrtLines(lines, name);
+      return { id: asset.id };
+    },
+    registerVideo: ({ url, name, setAs, durationSec }) => {
+      const fallbackName = decodeURIComponent(url.split("/").pop()?.split("?")[0] || url);
+      const asset = addVideoAsset({ name: name || fallbackName, src: url, durationSec });
+      if (setAs === "reference") applyVideoSrc(asset.src);
+      else if (setAs === "cam") handleSetCam(asset.src);
+      return { id: asset.id, url: asset.src };
+    },
+    seek: (t) => seek(Math.max(0, t)),
+    setPlaying: (b) => {
+      if (b && durRef.current <= 0) throw new Error("还没有可播放的内容(没有视频也没有卡)");
+      setPlaying(b);
+    },
+  };
+  const aiApiRef = useRef(aiApi);
+  aiApiRef.current = aiApi;
+  useEffect(
+    () => connectMcpExecutor(() => aiApiRef.current, ({ connected }) => setMcpConnected(connected)),
+    [],
+  );
+
   return (
     <div
       className="app"
@@ -1488,7 +1631,33 @@ export default function App() {
           onUseSrt: (name, lines) => applySrtLines(lines, name),
           onSeek: seek,
           onHover: (item, anchor) => setHover({ item, anchor }),
+          // 预设「＋ 加到 序列n」:和普通卡一样插到播放头处,只是 params 用预设里存的那份
+          onAddPreset: (kind, params) =>
+            insertCard(kind, Math.round(curTRef.current * 10) / 10, activeTrack, { params }),
         }}
+        bottom={
+          /* 单卡参数面板住在左栏下半部分(右栏整栏给了 AI 助手) */
+          <ParamsPanel
+            embedded
+            effect={panelEffect}
+            params={selCard?.params}
+            onChange={handleCardParamChange}
+            onChangeMany={patchCardParams}
+            card={selCard}
+            editMode
+            onLayer={handleCardLayer}
+            layer={layerInfo}
+            onTimeChange={handleCardTimeChange}
+            onKindChange={handleCardKindChange}
+            onDelete={handleDeleteCard}
+            trackCount={trackCount}
+            trackNames={overlay?.trackNames}
+            cardTrack={selCard ? trackOf(selCard) : undefined}
+            onTrack={(track) => selCardId && handleCardTrack(selCardId, track)}
+            batch={batch || undefined}
+            onApplyAll={handleApplyAll}
+          />
+        }
       />
 
       <main className="stage-col">
@@ -1557,25 +1726,9 @@ export default function App() {
         />
       </main>
 
-      <ParamsPanel
-        effect={panelEffect}
-        params={selCard?.params}
-        onChange={handleCardParamChange}
-        onChangeMany={patchCardParams}
-        card={selCard}
-        editMode
-        onLayer={handleCardLayer}
-        layer={layerInfo}
-        onTimeChange={handleCardTimeChange}
-        onKindChange={handleCardKindChange}
-        onDelete={handleDeleteCard}
-        trackCount={trackCount}
-        trackNames={overlay?.trackNames}
-        cardTrack={selCard ? trackOf(selCard) : undefined}
-        onTrack={(track) => selCardId && handleCardTrack(selCardId, track)}
-        batch={batch || undefined}
-        onApplyAll={handleApplyAll}
-      />
+      {/* 右栏:AI 助手(Claude Code / agy / Codex / API 直连)。它通过后台的 MCP 桥读写编辑台,
+          绿点 = 这个页面已连上桥。单卡参数面板搬去了左栏下半部分 */}
+      <AiPanel mcpConnected={mcpConnected} />
       </div>
 
       {/* 素材库的悬停预览:portal 到 body,不受左栏 overflow 影响。

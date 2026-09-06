@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, type ReactNode } from "react";
 import { kindColor } from "../effects/kindColor";
 import type { OverlayDoc } from "../overlay/types";
 import { trackOf } from "../overlay/types";
@@ -25,6 +25,23 @@ interface SidebarProps {
   onTab: (t: SideTab) => void;
   /** 素材库分页要的全部东西,整个对象透传给 LibraryTab(hotkeys 由这里定:显示时才接管 ↑↓) */
   library: Omit<LibraryTabProps, "hotkeys">;
+  /** 左栏下半部分(单卡参数面板,ParamsPanel embedded):两个分页都显示,上下有可拖的分隔条 */
+  bottom?: ReactNode;
+}
+
+/** 下半部分占左栏的百分比:存 localStorage,范围 25–70 */
+const BOTTOM_KEY = "sideBottomH";
+const BOTTOM_MIN = 25;
+const BOTTOM_MAX = 70;
+const BOTTOM_DEFAULT = 46;
+function readBottomH(): number {
+  try {
+    const v = Number(localStorage.getItem(BOTTOM_KEY));
+    if (Number.isFinite(v) && v >= BOTTOM_MIN && v <= BOTTOM_MAX) return v;
+  } catch {
+    /* 存储不可用就用默认 */
+  }
+  return BOTTOM_DEFAULT;
 }
 
 function fmtT(t: number) {
@@ -50,10 +67,46 @@ export function Sidebar({
   tab,
   onTab,
   library,
+  bottom,
 }: SidebarProps) {
   const jsonRef = useRef<HTMLInputElement>(null);
   const fxListRef = useRef<HTMLDivElement>(null);
   const isEdit = tab === "edit";
+
+  // ---- 上下分隔条:拖动改下半部分高度(百分比),松手存 localStorage ----
+  const asideRef = useRef<HTMLElement>(null);
+  const [bottomH, setBottomH] = useState<number>(readBottomH);
+  const [dragging, setDragging] = useState(false);
+  const startSplitDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    const aside = asideRef.current;
+    if (!aside) return;
+    e.preventDefault();
+    const rect = aside.getBoundingClientRect();
+    const handle = e.currentTarget;
+    handle.setPointerCapture(e.pointerId);
+    setDragging(true);
+    let latest = bottomH;
+    const onMove = (ev: PointerEvent) => {
+      // 分隔条在哪,下半部分就从哪开始:百分比 = 分隔条以下的高度 / 左栏总高
+      const pct = ((rect.bottom - ev.clientY) / rect.height) * 100;
+      latest = Math.round(Math.min(BOTTOM_MAX, Math.max(BOTTOM_MIN, pct)));
+      setBottomH(latest);
+    };
+    const onUp = () => {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+      setDragging(false);
+      try {
+        localStorage.setItem(BOTTOM_KEY, String(latest));
+      } catch {
+        /* 存不了就只在本次会话有效 */
+      }
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
+  };
 
   // ↑ ↓ = 上一张 / 下一张卡(当前轨道上的;和点一下一样,播放头跟着跳过去)。
   // 只在编辑台分页挂:素材库分页显示时 ↑↓ 归它,用来走素材列表
@@ -151,7 +204,7 @@ export function Sidebar({
   const trackCards = (overlay?.cards ?? []).filter((c) => trackOf(c) === activeTrack);
 
   return (
-    <aside className="panel panel-left">
+    <aside className="panel panel-left" ref={asideRef}>
       {/* 顶级分页:编辑台 / 素材库。素材库以前是顶栏按钮开的浮层,现在就住在这儿 */}
       <div className="side-top">
         <button
@@ -296,6 +349,23 @@ export function Sidebar({
           </div>
         </>
       )}
+
+      {/* 下半部分:单卡参数面板(右栏让给了 AI 助手)。分隔条可拖,高度记在 localStorage */}
+      {bottom ? (
+        <>
+          <div
+            className={`side-split ${dragging ? "is-dragging" : ""}`}
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="拖动调整参数面板高度"
+            title="上下拖动调整参数面板高度"
+            onPointerDown={startSplitDrag}
+          />
+          <div className="side-bottom" style={{ ["--side-bottom-h" as string]: `${bottomH}%` }}>
+            {bottom}
+          </div>
+        </>
+      ) : null}
     </aside>
   );
 }

@@ -40,6 +40,8 @@ interface ParamsPanelProps {
   trackNames?: Record<number, string>;
   batch?: { count: number; scale: number | null; speed: number | null };
   onApplyAll?: (patch: Record<string, unknown>) => void;
+  /** 嵌入模式:作为左栏下半部分渲染(根节点是 div.pp-embedded,不再是右栏 aside);右栏让给 AI 助手 */
+  embedded?: boolean;
 }
 
 /** 所有卡片通用的大小滑块(画布滚轮同步改这个值)
@@ -556,7 +558,11 @@ export function ParamsPanel({
   trackNames,
   batch,
   onApplyAll,
+  embedded,
 }: ParamsPanelProps) {
+  // 右栏独立面板 = aside.panel-right;嵌入左栏 = div.pp-embedded(样式见 App.css「左栏下半」一节)
+  const Root: "aside" | "div" = embedded ? "div" : "aside";
+  const rootClass = embedded ? "pp-embedded" : "panel panel-right";
   // 「更换特效」搜索词(卡片越来越多,先搜再换)
   const [kindQuery, setKindQuery] = useState("");
   // 右栏分页:常规(控件)/ 代码(直接看、改这张卡的 JSON)。记住上次选的页,换卡不跳回去
@@ -573,7 +579,7 @@ export function ParamsPanel({
   // `if (!def) return null` 跳过,只有这块面板会炸。
   if (card && !effect) {
     return (
-      <aside className="panel panel-right">
+      <Root className={rootClass}>
         <div className="pp-head">
           <span className="pp-kicker">单卡参数 · Card</span>
         </div>
@@ -587,7 +593,7 @@ export function ParamsPanel({
           <br />
           「更换特效」换一张,或直接删掉。
         </div>
-      </aside>
+      </Root>
     );
   }
 
@@ -599,7 +605,7 @@ export function ParamsPanel({
   // 编辑台没选卡:给一个明确的空状态,而不是显示无关参数
   if (editMode && !card) {
     return (
-      <aside className="panel panel-right">
+      <Root className={rootClass}>
         <div className="pp-head">
           <span className="pp-kicker">单卡参数 · Card</span>
         </div>
@@ -611,7 +617,7 @@ export function ParamsPanel({
           内容 / 节奏 / 样式 / 落位。
         </div>
         <BatchSection batch={batch} onApplyAll={onApplyAll} inset />
-      </aside>
+      </Root>
     );
   }
 
@@ -639,7 +645,7 @@ export function ParamsPanel({
   }
 
   return (
-    <aside className="panel panel-right">
+    <Root className={rootClass}>
       {/* 头部:我在调哪张卡 */}
       <div className="pp-head">
         <span className="pp-kicker">{card ? `单卡参数 · ${card.id}` : "效果模板"}</span>
@@ -896,6 +902,6 @@ export function ParamsPanel({
       </div>
       )}
 
-    </aside>
+    </Root>
   );
 }

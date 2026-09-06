@@ -1,3 +1,5 @@
+// 运行: npx tsx --tsconfig tsconfig.app.json src/ai/__tests__/liteMarkdown.test.tsx
+// 必须带 --tsconfig tsconfig.app.json,否则 tsx 读不到 jsx 的 react-jsx 设置,会报 React is not defined
 // @ts-ignore
 import assert from "node:assert";
 import { renderLiteMarkdown } from "../liteMarkdown";

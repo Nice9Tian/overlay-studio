@@ -56,8 +56,9 @@
   flex-direction: column;
   gap: 8px;
   flex: 1;
-  /* 不能是 0:标签栏占掉空间后会把列表压没(实测 height 变 0,筛出来也看不见) */
-  min-height: 260px;
+  /* 不能是 0:标签栏占掉空间后会把列表压没(实测 height 变 0,筛出来也看不见)。
+     参数面板搬进左栏下半后(.side-bottom 占 46%),这里只保底 120px,其余让分隔条决定 */
+  min-height: 120px;
   overflow-y: auto;
 }
 .fx-item {
@@ -2405,3 +2406,49 @@ input[type="range"]::-moz-range-thumb {
   border-radius: 3px;
   padding: 1px 5px;
 }
+
+/* ============ 左栏下半:嵌入的参数面板(AI 助手接管右栏后,单卡参数住在左栏下半) ============ */
+/* 上下分隔条:可拖,高度存 localStorage(sideBottomH),范围 25%–70% */
+.side-split {
+  flex: none;
+  height: 8px;
+  margin: 6px -16px 0;
+  cursor: row-resize;
+  position: relative;
+  touch-action: none;
+}
+.side-split::before {
+  content: "";
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: 3px;
+  height: 1px;
+  background: var(--hairline-strong);
+  transition: background 120ms ease, height 120ms ease;
+}
+.side-split:hover::before,
+.side-split.is-dragging::before {
+  height: 2px;
+  background: var(--accent);
+}
+.side-bottom {
+  flex: 0 0 var(--side-bottom-h, 46%);
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  margin: 0 -16px -20px;
+  overflow: hidden;
+}
+/* 嵌入态的参数面板:结构和右栏版一样(pp-head / ctrl-list / pp-foot),只是内边距收窄、高度撑满 .side-bottom */
+.pp-embedded {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-top: 12px;
+}
+.pp-embedded .pp-head { padding: 0 16px 10px; margin-bottom: 10px; }
+.pp-embedded .ctrl-list { padding: 4px 16px 16px; }
+.pp-embedded .pp-empty { padding: 16px; line-height: 1.9; }
+.pp-embedded .pp-foot { padding: 10px 16px 0; }

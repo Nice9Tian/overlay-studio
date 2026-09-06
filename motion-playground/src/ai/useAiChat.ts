@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { AiProvider, ChatMessage, ChatAttachment, ProviderInfo, RunEvent, SttInfo } from "./types";
+import type { AiProvider, ChatMessage, ChatAttachment, ProviderInfo, RunEvent, SttInfo, LoginState, PublicAiConfig, AiConfigPatch } from "./types";
 import { parseSseChunks } from "./sse";
 
 export function useAiChat(opts?: { mock?: boolean }) {
@@ -11,18 +11,36 @@ export function useAiChat(opts?: { mock?: boolean }) {
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [loginState, setLoginState] = useState<Partial<Record<AiProvider, LoginState>>>({});
+  const [config, setConfig] = useState<PublicAiConfig | null>(null);
+
   const abortControllerRef = useRef<AbortController | null>(null);
   const currentRunId = useRef<string | null>(null);
+  const setupGateRef = useRef(false);
+  const loginTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (opts?.mock) {
       setProviders([
-        { id: "claude", label: "Claude Code", available: true },
-        { id: "agy", label: "Antigravity", available: true }
+        { id: "claude", label: "Claude Code", available: true, version: "2.1.221", auth: { loggedIn: false, loginCommand: ["claude", "auth", "login"] } },
+        { id: "codex", label: "Codex", available: true, version: "0.136.0", auth: { loggedIn: null, detail: "unknown variant ultra, expected one of none|minimal|low|medium|high|xhigh", fixHint: "codex 配置文件 ~/.codex/config.toml 第 5 行的 model_reasoning_effort 值本版 codex 不认,改成 high 或 xhigh 后再试", loginCommand: ["codex", "login"] } },
+        { id: "agy", label: "Antigravity", available: true, version: "1.1.27", auth: { loggedIn: true } },
+        { id: "api", label: "API 直连", available: false, note: "还没填 API Key", auth: { loggedIn: false, detail: "还没填 API Key" } }
       ]);
+      setConfig({ version: 1, defaultProvider: null, api: { vendor: "anthropic", baseUrl: "", model: "", maxTokens: 4096, apiKey: { set: false, last4: "" } } });
       setProvider("claude");
+      if (localStorage.getItem("aiSetupDone") === null) {
+        setSetupOpen(true);
+      }
       return;
     }
+
+    fetch("/api/ai/config")
+      .then((res) => res.json())
+      // 桥统一用 { ok, config } 信封(和其他接口一致);兼容裸 publicConfig
+      .then((data) => setConfig(data?.config ?? data))
+      .catch(() => {});
 
     fetch("/api/ai/providers")
       .then((res) => res.json())
@@ -57,6 +75,123 @@ export function useAiChat(opts?: { mock?: boolean }) {
         }
       });
   }, [opts?.mock]);
+
+  useEffect(() => {
+    if (providers.length > 0 && !setupGateRef.current && !opts?.mock) {
+      setupGateRef.current = true;
+      if (localStorage.getItem("aiSetupDone") === null) {
+        setSetupOpen(true);
+      }
+    }
+  }, [providers, opts?.mock]);
+
+  useEffect(() => {
+    return () => {
+      if (loginTimerRef.current !== null) {
+        window.clearInterval(loginTimerRef.current);
+      }
+    };
+  }, []);
+
+  const login = useCallback(async (id: AiProvider) => {
+    if (loginTimerRef.current !== null) {
+      window.clearInterval(loginTimerRef.current);
+      loginTimerRef.current = null;
+    }
+
+    setLoginState(prev => ({ ...prev, [id]: "waiting" }));
+
+    if (opts?.mock) {
+      setTimeout(() => {
+        setLoginState(prev => ({ ...prev, [id]: "ok" }));
+        setProviders(prev => prev.map(p => p.id === id ? { ...p, auth: { ...p.auth, loggedIn: true } } : p));
+      }, 1500);
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/ai/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: id }),
+      });
+      if (!res.ok) throw new Error("login failed");
+      
+      const startTime = Date.now();
+      loginTimerRef.current = window.setInterval(async () => {
+        if (Date.now() - startTime > 180000) {
+          if (loginTimerRef.current !== null) window.clearInterval(loginTimerRef.current);
+          setLoginState(prev => ({ ...prev, [id]: "timeout" }));
+          return;
+        }
+        try {
+          const r = await fetch("/api/ai/providers?refresh=1");
+          if (!r.ok) return;
+          const data = await r.json();
+          let list: ProviderInfo[] = Array.isArray(data) ? data : (data.providers || []);
+          setProviders(list);
+          const p = list.find(x => x.id === id);
+          if (p && p.auth?.loggedIn === true) {
+            if (loginTimerRef.current !== null) window.clearInterval(loginTimerRef.current);
+            setLoginState(prev => ({ ...prev, [id]: "ok" }));
+          }
+        } catch {
+          // ignore error in polling
+        }
+      }, 3000);
+    } catch {
+      setLoginState(prev => ({ ...prev, [id]: "timeout" }));
+      setError("登录请求失败");
+    }
+  }, [opts?.mock]);
+
+  const saveConfig = useCallback(async (patch: AiConfigPatch) => {
+    if (opts?.mock) {
+      setConfig(prev => {
+        if (!prev) return prev;
+        const newApi = { ...prev.api, ...patch.api } as any;
+        if (patch.api?.apiKey !== undefined) {
+          if (typeof patch.api.apiKey === "string" && patch.api.apiKey.length > 0) {
+            newApi.apiKey = { set: true, last4: patch.api.apiKey.slice(-4) };
+          } else if (patch.api.apiKey === null) {
+            newApi.apiKey = { set: false, last4: "" };
+          }
+        }
+        return {
+          ...prev,
+          defaultProvider: patch.defaultProvider !== undefined ? patch.defaultProvider : prev.defaultProvider,
+          api: newApi
+        };
+      });
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/ai/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) throw new Error("save config failed");
+      const data = await res.json();
+      setConfig(data?.config ?? data);
+    } catch (e) {
+      setError("保存配置失败");
+      throw e;
+    }
+  }, [opts?.mock]);
+
+  const openSetup = useCallback(() => setSetupOpen(true), []);
+
+  const closeSetup = useCallback((chosen?: AiProvider) => {
+    setSetupOpen(false);
+    localStorage.setItem("aiSetupDone", "1");
+    if (chosen) {
+      localStorage.setItem("aiProvider", chosen);
+      setProvider(chosen);
+      saveConfig({ defaultProvider: chosen }).catch(() => {});
+    }
+  }, [saveConfig]);
 
   useEffect(() => {
     if (!provider) return;
@@ -303,6 +438,13 @@ export function useAiChat(opts?: { mock?: boolean }) {
     abort,
     newChat,
     error,
-    setMessages
+    setMessages,
+    login,
+    loginState,
+    config,
+    saveConfig,
+    setupOpen,
+    openSetup,
+    closeSetup
   };
 }
