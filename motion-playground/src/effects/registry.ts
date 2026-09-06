@@ -21,6 +21,7 @@ import { statProofDef } from "./hud/StatProof";
 import { growthCurveDef } from "./hud/GrowthCurve";
 import { entityChipsDef } from "./hud/EntityChips";
 import { pinBoardDef } from "./hud/PinBoard";
+import { customCardDef } from "./hud/CustomCard";
 
 /** 按用途分组:同组内是"同一类需求的可选项",挑一张用即可 */
 export interface EffectGroup {
@@ -77,9 +78,10 @@ export const EFFECT_GROUPS: EffectGroup[] = [
     title: "场景 · B-roll",
     effects: [terminal3DDef],
   },
-  
-  
-  
+  {
+    title: "信息结构",
+    effects: [customCardDef],
+  }
 ];
 
 // 平铺列表(消费端按 id 取用;id 即 overlay JSON 的 kind)
