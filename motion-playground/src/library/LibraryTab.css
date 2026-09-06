@@ -1,0 +1,186 @@
+/* 素材库分页(契约:LIBRARY-TAB-DESIGN.md)。
+   通用观感直接复用 App.css 里已有的 .fx-* / .srt-* / .video-btn / .ctrl-input,
+   这里只写本页自己的新类(lib- 前缀)和几条「在左栏里」的局部覆盖 —— 不改 App.css。 */
+
+/* 左栏是 .panel.panel-left(padding 16px 16px 20px,列宽 320px):
+   本页在这个高度里撑满,搜索框 / 标签栏 / 动作栏定高,只让中间的列表滚。 */
+.lib-tab {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 搜索框:App.css 给的 0 12px 是浮层里的留白,左栏已经有 16px,这里贴边 */
+.lib-tab .fx-search {
+  flex: none;
+  padding: 0 0 10px;
+}
+
+/* 列表自己滚。App.css 的 min-height: 260px 是给编辑台那栏兜底的,
+   在这里会把底部动作栏顶出可视区,所以本页改回可压缩。 */
+.lib-tab .fx-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* ---- 视频 / 字幕条目(在 .fx-item 之上补:左内容 + 右 ✕) ----
+   带上 .lib-tab 前缀是为了赢过 App.css 的 .fx-item:App.css 在打包顺序里排在本文件后面,
+   同分的选择器会是它赢(align-items / gap 就会被拉回去)。 */
+.lib-tab .lib-item {
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+}
+.lib-tab .lib-item:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.lib-item-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.lib-item-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--ink);
+}
+.lib-item-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lib-item-meta {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+}
+/* 「参考视频」「口播」「使用中」 */
+.lib-badge {
+  flex: none;
+  font-size: 9.5px;
+  line-height: 1.6;
+  letter-spacing: 0.06em;
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  white-space: nowrap;
+}
+/* 删登记(不删文件) */
+.lib-del {
+  flex: none;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-size: 12px;
+  color: var(--ink-faint);
+  transition: color 140ms ease, background 140ms ease;
+}
+.lib-del:hover {
+  color: var(--danger);
+  background: var(--fill-subtle);
+}
+
+/* 拖动中的那张卡淡一点,一眼看出「在手上」 */
+.lib-tab .fx-item.is-dragging {
+  opacity: 0.45;
+}
+
+/* ---- 选中的字幕素材:在它下面展开句子(复用 App.css 的 .srt-*) ---- */
+.lib-srt-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 8px;
+  padding: 6px 0 6px 8px;
+  border-left: 2px solid var(--hairline);
+}
+.lib-srt-lines .srt-line {
+  width: 100%;
+}
+
+/* ---- 组里的导入按钮 / 提示 ---- */
+/* App.css 的 .video-btn 是给「一行两枚」的视频行写的(flex: 1),这里是竖排,不要拉伸 */
+.lib-tab .video-btn {
+  flex: none;
+  padding: 9px 10px;
+  font-size: 12.5px;
+  border-radius: 4px;
+}
+.lib-tab .video-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.lib-import-btn {
+  width: 100%;
+}
+.lib-err {
+  padding: 2px 2px 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--danger);
+  word-break: break-word;
+}
+.lib-empty {
+  padding: 2px 2px 4px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--ink-faint);
+}
+
+/* ---- 底部动作栏:永远在,跟着选中的东西换按钮 ---- */
+.lib-foot {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+}
+.lib-foot-row {
+  display: flex;
+  gap: 8px;
+}
+.lib-foot-row .video-btn {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.lib-btn-wide {
+  width: 100%;
+}
+/* 主按钮:唯一的信号色,和「正在发生的事」同一档 */
+.lib-btn-primary {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--on-accent);
+  font-size: 13px;
+  font-weight: 500;
+  transition: opacity 140ms ease;
+}
+.lib-btn-primary:hover {
+  opacity: 0.88;
+}
+.lib-hint {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--ink-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
