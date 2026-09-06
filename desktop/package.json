@@ -1,7 +1,7 @@
 {
   "name": "overlay-studio-desktop",
   "private": true,
-  "version": "1.1.1",
+  "version": "1.2.0",
   "type": "module",
   "description": "Overlay Studio 的 Tauri 桌面壳:自带 Node、Chrome for Testing、ffmpeg,双击即用",
   "scripts": {

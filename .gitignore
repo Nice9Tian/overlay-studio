@@ -74,3 +74,7 @@ desktop/dist/
 desktop/.smoke-state.json
 desktop/src-tauri/icons/android/
 desktop/src-tauri/icons/ios/
+
+# 发布归档:清单进仓库,安装包/补丁 EXE 太大不进
+desktop/releases/**/*.exe
+desktop/releases/**/*.zip
