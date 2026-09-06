@@ -1,0 +1,25 @@
+[package]
+name = "overlay-studio"
+version = "1.1.1"
+description = "Overlay Studio Desktop App"
+authors = ["一页枝鸥"]
+edition = "2021"
+
+[lib]
+name = "overlay_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-opener = "2"
+# 原生消息框直接用 rfd,不用 tauri-plugin-dialog:那个插件会往页面注入脚本改写 window.alert/confirm,
+# 编辑台是远程地址会被 ACL 拒掉,而且 confirm 变异步后页面的同步守卫会失效。详见 lib.rs 的 native_message。
+rfd = "0.16"
+tauri-plugin-window-state = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

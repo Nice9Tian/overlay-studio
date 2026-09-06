@@ -1,0 +1,183 @@
+; Overlay Studio 更新补丁 —— 由 scripts/build-patch.mjs 从这个模板生成,「@名字@」形式的是占位符。
+; 只更新已装目录里变化的文件,不重装 Chrome / ffmpeg / Node,所以体积小、几秒装完。
+;
+; 用法:
+;   双击                 —— 图形界面,自动找到安装目录
+;   patch.exe /S         —— 静默
+;   patch.exe /S /D=C:\某个目录   —— 指定安装目录(/D 必须最后一个参数、不加引号)
+;   patch.exe /S /RESTART        —— 装完自动启动 Overlay Studio
+; 退出码:0 成功;3 没找到已装的程序;4 基线不匹配;5 有文件写不进去(补丁未应用,基线不变)。
+; 所有 MessageBox 都带 /SD IDOK:静默模式自动按「确定」,只靠退出码报错,不弹窗打扰人。
+
+Unicode true
+!include "MUI2.nsh"
+!include "LogicLib.nsh"
+!include "FileFunc.nsh"
+!include "TextFunc.nsh"
+!include "StrFunc.nsh"
+!include "x64.nsh"
+${Using:StrFunc} StrStr
+
+Name "Overlay Studio 更新补丁 @PATCH_TAG@"
+OutFile "@OUT_FILE@"
+; 不写 InstallDir:这样 $INSTDIR 只有在用户传了 /D= 时才有值,.onInit 里据此判断要不要查注册表
+RequestExecutionLevel user
+SetCompressor /SOLID lzma
+ShowInstDetails show
+; 文件写不进去时保持默认的 AllowSkipFiles on:静默模式下 NSIS 会自动「跳过」并置错误标志,
+; 下面 File /r 之后用 ${Errors} 接住它、带退出码 5 中止且不推进基线。改成 off 的话静默模式会弹重试框卡住。
+BrandingText "Overlay Studio patch @PATCH_TAG@"
+
+!define MUI_ICON "@ICON@"
+!define MUI_WELCOMEPAGE_TITLE "Overlay Studio 更新补丁"
+!define MUI_WELCOMEPAGE_TEXT "这个补丁把已安装的 Overlay Studio 更新到 @APP_VERSION@(@NEW_ID_SHORT@)。$\r$\n$\r$\n@SUMMARY_TEXT@$\r$\n$\r$\n补丁只替换变化的文件,不会动你的字体、素材、录屏和导出成品。正在运行的 Overlay Studio(包括正在进行的导出)会被关闭。"
+!define MUI_ABORTWARNING
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_INSTFILES
+!define MUI_FINISHPAGE_RUN "$INSTDIR\overlay-studio.exe"
+!define MUI_FINISHPAGE_RUN_TEXT "现在启动 Overlay Studio"
+!insertmacro MUI_PAGE_FINISH
+!insertmacro MUI_LANGUAGE "SimpChinese"
+!insertmacro MUI_LANGUAGE "English"
+
+Var Restart
+
+; 在 runtime\VERSIONS.json 里逐行找 "builtAt": "<基线时间戳>"。
+; 用纯 NSIS 而不是 PowerShell:路径里有单引号(C:\Users\O'Brien)或方括号时,把 $INSTDIR 拼进
+; PowerShell 字符串会直接语法错误或被当成通配符,原版用户收到的第一个补丁就会被误拒。
+; 结果放 $R9:1 = 找到,0 = 没找到。
+Function CheckBuiltAt
+  StrCpy $R9 0
+  ClearErrors
+  FileOpen $R8 "$INSTDIR\runtime\VERSIONS.json" r
+  IfErrors done
+  loop:
+    FileRead $R8 $R7
+    IfErrors close
+    ${StrStr} $R6 $R7 '"builtAt": "@BASE_BUILT_AT@"'
+    ${If} $R6 != ""
+      StrCpy $R9 1
+      Goto close
+    ${EndIf}
+    Goto loop
+  close:
+    FileClose $R8
+  done:
+FunctionEnd
+
+Function .onInit
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/RESTART" $R1
+  ${IfNot} ${Errors}
+    StrCpy $Restart "1"
+  ${EndIf}
+
+  ; 安装目录:/D= 优先;没有就读完整安装包写进注册表的 InstallLocation;再没有就用默认位置
+  ${If} $INSTDIR == ""
+    ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Overlay Studio" "InstallLocation"
+    ; 注册表里的值可能带引号,去掉
+    StrCpy $1 $0 1
+    ${If} $1 == '"'
+      StrCpy $0 $0 -1 1
+    ${EndIf}
+    ${If} $0 == ""
+      StrCpy $0 "$LOCALAPPDATA\Overlay Studio"
+    ${EndIf}
+    StrCpy $INSTDIR $0
+  ${EndIf}
+
+  ${IfNot} ${FileExists} "$INSTDIR\overlay-studio.exe"
+    MessageBox MB_ICONSTOP|MB_OK "在 $INSTDIR 没有找到已安装的 Overlay Studio。$\r$\n补丁只能更新已经装好的程序,请先用完整安装包安装。" /SD IDOK
+    SetErrorLevel 3
+    Abort
+  ${EndIf}
+
+  ; 基线核对。两种情况:
+  ;  1) 打过补丁的目录有 patch-id.txt,内容必须等于这个补丁的基线 id;
+  ;  2) 完整安装包装出来、还没打过补丁的原版没有这个文件,改比 runtime/VERSIONS.json 里的 builtAt
+  ;     (每次完整构建都不同,等于原版的身份证)。
+  ${If} ${FileExists} "$INSTDIR\patch-id.txt"
+    FileOpen $0 "$INSTDIR\patch-id.txt" r
+    FileRead $0 $1
+    FileClose $0
+    ${TrimNewLines} $1 $1
+    ${If} $1 != "@BASE_ID@"
+      MessageBox MB_ICONSTOP|MB_OK "这个补丁不是针对当前已装版本做的。$\r$\n已装:$1$\r$\n补丁基线:@BASE_ID@$\r$\n$\r$\n请使用对应版本的补丁,或直接用完整安装包。" /SD IDOK
+      SetErrorLevel 4
+      Abort
+    ${EndIf}
+  ${ElseIf} "@BASE_BUILT_AT@" != ""
+    Call CheckBuiltAt
+    ${If} $R9 != 1
+      MessageBox MB_ICONSTOP|MB_OK "这个补丁不是针对当前已装版本做的(已装的构建时间和补丁基线 @BASE_BUILT_AT@ 不一致)。$\r$\n请使用对应版本的补丁,或直接用完整安装包。" /SD IDOK
+      SetErrorLevel 4
+      Abort
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
+
+Section "Patch"
+  DetailPrint "安装目录:$INSTDIR"
+  DetailPrint "关闭正在运行的 Overlay Studio 及其子进程(只关这个目录下的)…"
+  ; 路径经环境变量传给 PowerShell,不拼进命令字符串:含单引号、方括号、空格都安全。
+  ; 只杀可执行文件在 $INSTDIR 下面的进程:壳、sidecar node、导出用的 Chrome、ffmpeg 都在里面;
+  ; 开发机上另一份副本或用户自己的 Chrome 不受影响。$$ 是 NSIS 里的字面 $。
+  System::Call 'Kernel32::SetEnvironmentVariable(t "OVS_PATCH_DIR", t "$INSTDIR")'
+  ; 安装器是 32 位进程,直接调 powershell 会拿到 32 位版,它看不到 64 位进程的可执行路径,
+  ; 过滤条件永远不匹配、一个都杀不掉(2026-09-06 探针实测)。关掉 WOW64 重定向才会调到 64 位的。
+  ${DisableX64FSRedirection}
+  nsExec::ExecToLog `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$d = $$env:OVS_PATCH_DIR.TrimEnd([char]92) + [char]92; Get-Process | Where-Object { $$_.Path -and $$_.Path.StartsWith($$d, [System.StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { taskkill /F /T /PID $$_.Id | Out-Null }"`
+  Pop $0
+  ${EnableX64FSRedirection}
+  ${If} $0 != 0
+    DetailPrint "提示:没能用 PowerShell 检查运行中的进程($0),继续尝试写入"
+  ${EndIf}
+
+  ; 等壳 exe 真的可写(进程退出后句柄释放要一点时间),最多等 10 秒。
+  ; 等不到就带退出码 5 停下,绝不带着被占用的文件硬装。
+  StrCpy $2 0
+  wait_loop:
+    ClearErrors
+    FileOpen $1 "$INSTDIR\overlay-studio.exe" a
+    ${IfNot} ${Errors}
+      FileClose $1
+      Goto wait_done
+    ${EndIf}
+    IntOp $2 $2 + 1
+    ${If} $2 > 20
+      MessageBox MB_ICONSTOP|MB_OK "Overlay Studio 还在运行(overlay-studio.exe 被占用),补丁没有应用。$\r$\n请关掉它再重新运行补丁。" /SD IDOK
+      SetErrorLevel 5
+      Abort
+    ${EndIf}
+    Sleep 500
+    Goto wait_loop
+  wait_done:
+
+  SetOutPath "$INSTDIR"
+  DetailPrint "删除已移除的文件(@DELETE_COUNT@ 个)…"
+@DELETE_LINES@
+  DetailPrint "写入更新的文件(@FILE_COUNT@ 个)…"
+  ClearErrors
+  File /r "@STAGE_DIR@\*"
+  ${If} ${Errors}
+    ; 有文件没写进去就不能推进基线:否则下一个补丁按新 id 放行,漏掉的文件永远补不上
+    DetailPrint "有文件没能写入(可能被占用),补丁未完成,基线保持不变"
+    MessageBox MB_ICONSTOP|MB_OK "有文件没能写入(可能被别的程序占用),补丁没有完成。$\r$\n关掉占用安装目录的程序后重新运行补丁即可,已写入的部分会被再写一遍,不会留下半成品。" /SD IDOK
+    SetErrorLevel 5
+    Abort
+  ${EndIf}
+
+  ; 记录当前状态,供下一个补丁核对基线
+  FileOpen $0 "$INSTDIR\patch-id.txt" w
+  FileWrite $0 "@NEW_ID@"
+  FileClose $0
+  FileOpen $0 "$INSTDIR\patch-log.txt" a
+  FileWrite $0 "@BUILT_AT@  @PATCH_TAG@  @BASE_ID_SHORT@ -> @NEW_ID_SHORT@  files=@FILE_COUNT@ deleted=@DELETE_COUNT@$\r$\n"
+  FileClose $0
+  DetailPrint "完成:@BASE_ID_SHORT@ -> @NEW_ID_SHORT@"
+
+  ${If} $Restart == "1"
+    Exec '"$INSTDIR\overlay-studio.exe"'
+  ${EndIf}
+SectionEnd

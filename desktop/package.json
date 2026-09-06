@@ -1,0 +1,20 @@
+{
+  "name": "overlay-studio-desktop",
+  "private": true,
+  "version": "1.1.1",
+  "type": "module",
+  "description": "Overlay Studio 的 Tauri 桌面壳:自带 Node、Chrome for Testing、ffmpeg,双击即用",
+  "scripts": {
+    "prepare-runtime": "node scripts/prepare-runtime.mjs",
+    "patch": "node scripts/build-patch.mjs",
+    "patch:dry": "node scripts/build-patch.mjs --dry-run",
+    "patch:apply": "node scripts/build-patch.mjs --apply",
+    "patch:manifest": "node scripts/patch-manifest.mjs --source",
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
